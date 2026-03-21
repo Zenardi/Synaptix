@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/synaptix-protocol",
+    "crates/synaptix-daemon",
+    "crates/synaptix-ui/src-tauri",
+]
+resolver = "2"

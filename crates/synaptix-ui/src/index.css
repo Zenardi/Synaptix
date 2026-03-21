@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom glow utility for the battery ring */
+@layer utilities {
+  .ring-glow {
+    filter: drop-shadow(0 0 8px #44d62c) drop-shadow(0 0 2px #44d62c);
+  }
+}
