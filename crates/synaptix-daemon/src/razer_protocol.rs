@@ -86,6 +86,47 @@ pub fn build_static_color_payload(
     buf
 }
 
+// ── Battery / Power queries ───────────────────────────────────────────────────
+
+/// Command class for battery and power management queries.
+pub const CMD_CLASS_BATTERY: u8 = 0x07;
+
+/// Command ID: get battery level.  High bit set = device-to-host query.
+/// Response: `arguments[1]` contains 0-255 raw level.
+pub const CMD_ID_BATTERY_LEVEL: u8 = 0x80;
+
+/// Command ID: get charging status.
+/// Response: `arguments[1]` is 0 (discharging) or 1 (charging).
+pub const CMD_ID_CHARGING_STATUS: u8 = 0x84;
+
+/// Builds the 90-byte HID report that queries the device's battery level.
+///
+/// Send this with SET_REPORT, sleep ≥1 ms, then read 90 bytes with GET_REPORT.
+/// The battery level (0–255) will be in the response at `buf[9]` (arguments[1]).
+pub fn build_battery_query_payload(transaction_id: u8) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = transaction_id;
+    buf[5] = 0x02; // data_size
+    buf[6] = CMD_CLASS_BATTERY;
+    buf[7] = CMD_ID_BATTERY_LEVEL;
+    buf[88] = buf[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+    buf
+}
+
+/// Builds the 90-byte HID report that queries the device's charging status.
+///
+/// Send this with SET_REPORT, sleep ≥1 ms, then read 90 bytes with GET_REPORT.
+/// The charging flag (0 or 1) will be in the response at `buf[9]` (arguments[1]).
+pub fn build_charging_query_payload(transaction_id: u8) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = transaction_id;
+    buf[5] = 0x02; // data_size
+    buf[6] = CMD_CLASS_BATTERY;
+    buf[7] = CMD_ID_CHARGING_STATUS;
+    buf[88] = buf[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +187,53 @@ mod tests {
         assert_eq!(payload[15], 0x22, "G mismatch");
         assert_eq!(payload[16], 0x33, "B mismatch");
         assert_eq!(payload[89], 0x00, "reserved byte must be 0x00");
+    }
+
+    // ── Battery query tests ───────────────────────────────────────────────────
+
+    /// Battery level query for Cobra Pro (transaction_id=0x1F).
+    /// CRC = 0x02 ^ 0x07 ^ 0x80 = 0x85
+    #[test]
+    fn test_battery_query_payload_cobra_pro() {
+        let payload = build_battery_query_payload(TRANSACTION_ID_COBRA);
+        assert_eq!(payload[0], 0x00, "status must be 0x00");
+        assert_eq!(payload[1], TRANSACTION_ID_COBRA, "transaction_id mismatch");
+        assert_eq!(payload[5], 0x02, "data_size must be 2");
+        assert_eq!(payload[6], CMD_CLASS_BATTERY, "command_class must be 0x07");
+        assert_eq!(payload[7], CMD_ID_BATTERY_LEVEL, "command_id must be 0x80");
+        assert_eq!(payload[89], 0x00, "reserved byte must be 0x00");
+        // CRC: 0x02 ^ 0x07 ^ 0x80 = 0x85
+        assert_eq!(payload[88], 0x85, "CRC mismatch");
+    }
+
+    /// Charging status query for Cobra Pro (transaction_id=0x1F).
+    /// CRC = 0x02 ^ 0x07 ^ 0x84 = 0x81
+    #[test]
+    fn test_charging_query_payload_cobra_pro() {
+        let payload = build_charging_query_payload(TRANSACTION_ID_COBRA);
+        assert_eq!(payload[1], TRANSACTION_ID_COBRA, "transaction_id mismatch");
+        assert_eq!(payload[5], 0x02, "data_size must be 2");
+        assert_eq!(payload[6], CMD_CLASS_BATTERY, "command_class must be 0x07");
+        assert_eq!(
+            payload[7], CMD_ID_CHARGING_STATUS,
+            "command_id must be 0x84"
+        );
+        // CRC: 0x02 ^ 0x07 ^ 0x84 = 0x81
+        assert_eq!(payload[88], 0x81, "CRC mismatch");
+    }
+
+    /// DA V2 Pro uses a different transaction_id (0x3F); CRC must reflect that.
+    /// CRC = 0x02 ^ 0x07 ^ 0x80 = 0x85  (transaction_id is byte[1], outside CRC range)
+    #[test]
+    fn test_battery_query_payload_da_v2_pro() {
+        let payload = build_battery_query_payload(TRANSACTION_ID_DA);
+        assert_eq!(payload[1], TRANSACTION_ID_DA, "transaction_id mismatch");
+        assert_eq!(payload[6], CMD_CLASS_BATTERY);
+        assert_eq!(payload[7], CMD_ID_BATTERY_LEVEL);
+        // CRC bytes [2..88] are identical to Cobra Pro — transaction_id at [1] is outside range
+        assert_eq!(
+            payload[88], 0x85,
+            "CRC should be same regardless of transaction_id"
+        );
     }
 }

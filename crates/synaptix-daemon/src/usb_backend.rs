@@ -1,24 +1,16 @@
-use crate::razer_protocol::{RAZER_VID, REPORT_LEN};
-use rusb::{Context, UsbContext};
+use crate::razer_protocol::{
+    build_battery_query_payload, build_charging_query_payload, RAZER_VID, REPORT_LEN,
+};
+use rusb::{Context, DeviceHandle, UsbContext};
+use synaptix_protocol::BatteryState;
 
-/// Sends a 90-byte HID SET_REPORT control transfer to a Razer device.
-///
-/// Scans all USB devices for one matching `(VID=0x1532, PID=product_id)`,
-/// then issues:
-/// ```text
-/// bmRequestType = 0x21  (HOST→DEVICE | CLASS | INTERFACE)
-/// bRequest      = 0x09  (HID SET_REPORT)
-/// wValue        = 0x0300
-/// wIndex        = 0x00  (HID interface 0)
-/// data          = 90-byte report
-/// ```
-///
-/// Returns `Err(rusb::Error::NoDevice)` when the target device is not present.
-pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rusb::Result<()> {
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Opens the first Razer device matching `product_id` and returns its handle
+/// with kernel driver detached and interface 0 claimed.
+fn open_razer_device(product_id: u16) -> rusb::Result<DeviceHandle<Context>> {
     println!("[USB] Searching for Razer device with Product ID: 0x{product_id:04x}");
-
     let ctx = Context::new()?;
-
     let devices = ctx.devices()?;
     println!("[USB] Scanning {} USB device(s) …", devices.len());
 
@@ -41,59 +33,121 @@ pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rus
             desc.product_id()
         );
 
-        let handle = match device.open() {
-            Ok(h) => {
-                println!("[USB] Device opened successfully.");
-                h
-            }
-            Err(e) => {
-                eprintln!("[USB] Failed to open device: {e:?}");
-                return Err(e);
-            }
-        };
+        let handle = device.open().inspect_err(|e| {
+            eprintln!("[USB] Failed to open device: {e:?}");
+        })?;
 
-        // Automatically detach the kernel usbhid driver so we can claim the
-        // interface; it is reattached when `handle` is dropped.
+        println!("[USB] Device opened successfully.");
+
         if let Err(e) = handle.set_auto_detach_kernel_driver(true) {
             eprintln!(
                 "[USB] set_auto_detach_kernel_driver failed (non-fatal on some kernels): {e:?}"
             );
-            // Non-fatal: some kernels/platforms don't support this; continue anyway.
         }
 
-        if let Err(e) = handle.claim_interface(0) {
+        handle.claim_interface(0).inspect_err(|e| {
             eprintln!("[USB] claim_interface(0) failed: {e:?}");
-            return Err(e);
-        }
+        })?;
+
         println!("[USB] Interface 0 claimed.");
-
-        let timeout = std::time::Duration::from_millis(500);
-        let written = handle.write_control(
-            0x21,   // bmRequestType: HOST→DEVICE | CLASS | INTERFACE
-            0x09,   // bRequest: HID SET_REPORT
-            0x0300, // wValue
-            0x00,   // wIndex: interface 0
-            payload, timeout,
-        );
-
-        match written {
-            Ok(n) => {
-                println!("[USB] write_control returned {n} bytes (expected {REPORT_LEN}).");
-                if n != REPORT_LEN {
-                    eprintln!("[USB] Short write — expected {REPORT_LEN}, got {n}.");
-                    return Err(rusb::Error::Io);
-                }
-            }
-            Err(e) => {
-                eprintln!("[USB] write_control failed: {e:?}");
-                return Err(e);
-            }
-        }
-
-        println!("[USB] Control transfer complete.");
-        return Ok(());
+        return Ok(handle);
     }
 
     eprintln!("[USB] No Razer device with PID 0x{product_id:04x} found.");
     Err(rusb::Error::NoDevice)
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Sends a 90-byte HID SET_REPORT control transfer to a Razer device.
+///
+/// ```text
+/// bmRequestType = 0x21  (HOST→DEVICE | CLASS | INTERFACE)
+/// bRequest      = 0x09  (HID SET_REPORT)
+/// wValue        = 0x0300
+/// wIndex        = 0x00  (HID interface 0)
+/// data          = 90-byte report
+/// ```
+pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rusb::Result<()> {
+    let handle = open_razer_device(product_id)?;
+    let timeout = std::time::Duration::from_millis(500);
+
+    let n = handle
+        .write_control(0x21, 0x09, 0x0300, 0x00, payload, timeout)
+        .inspect_err(|e| eprintln!("[USB] write_control failed: {e:?}"))?;
+
+    println!("[USB] write_control returned {n} bytes (expected {REPORT_LEN}).");
+    if n != REPORT_LEN {
+        eprintln!("[USB] Short write — expected {REPORT_LEN}, got {n}.");
+        return Err(rusb::Error::Io);
+    }
+
+    println!("[USB] Control transfer complete.");
+    Ok(())
+}
+
+/// Queries the physical device for its current battery level and charging status.
+///
+/// Protocol (confirmed from `razercommon.c → razer_get_usb_response`):
+/// 1. Send battery level query via SET_REPORT (`bmRequestType=0x21`, `bRequest=0x09`)
+/// 2. Sleep ≥1 ms to allow firmware to prepare the response
+/// 3. Read response via GET_REPORT (`bmRequestType=0xA1`, `bRequest=0x01`)
+/// 4. `response[9]` (arguments[1]) holds the raw 0–255 level
+/// 5. Repeat for charging status query — `response[9]` is 0 or 1
+pub fn query_battery(product_id: u16, transaction_id: u8) -> rusb::Result<BatteryState> {
+    println!(
+        "[Battery] Querying battery for PID 0x{product_id:04x}, txn_id=0x{transaction_id:02x}"
+    );
+
+    let handle = open_razer_device(product_id)?;
+    let timeout = std::time::Duration::from_millis(500);
+    let sleep_ms = std::time::Duration::from_millis(1);
+
+    // ── Battery level ─────────────────────────────────────────────────────────
+    let level_query = build_battery_query_payload(transaction_id);
+
+    handle
+        .write_control(0x21, 0x09, 0x0300, 0x00, &level_query, timeout)
+        .inspect_err(|e| eprintln!("[Battery] SET_REPORT (level) failed: {e:?}"))?;
+
+    std::thread::sleep(sleep_ms);
+
+    let mut level_response = [0u8; REPORT_LEN];
+    handle
+        .read_control(0xA1, 0x01, 0x0300, 0x00, &mut level_response, timeout)
+        .inspect_err(|e| eprintln!("[Battery] GET_REPORT (level) failed: {e:?}"))?;
+
+    // arguments[1] is at byte index 9 (status[0] + txn_id[1] + remaining[2-3] +
+    // protocol[4] + data_size[5] + cmd_class[6] + cmd_id[7] + args[0][8] + args[1][9])
+    let raw_level = level_response[9];
+    let percent = ((raw_level as u16 * 100) / 255) as u8;
+    println!("[Battery] Raw level: {raw_level}/255 → {percent}%");
+
+    // ── Charging status ───────────────────────────────────────────────────────
+    let charging_query = build_charging_query_payload(transaction_id);
+
+    handle
+        .write_control(0x21, 0x09, 0x0300, 0x00, &charging_query, timeout)
+        .inspect_err(|e| eprintln!("[Battery] SET_REPORT (charging) failed: {e:?}"))?;
+
+    std::thread::sleep(sleep_ms);
+
+    let mut charging_response = [0u8; REPORT_LEN];
+    handle
+        .read_control(0xA1, 0x01, 0x0300, 0x00, &mut charging_response, timeout)
+        .inspect_err(|e| eprintln!("[Battery] GET_REPORT (charging) failed: {e:?}"))?;
+
+    let is_charging = charging_response[9] != 0;
+    println!("[Battery] Charging: {is_charging}");
+
+    let state = if is_charging && percent >= 100 {
+        BatteryState::Full
+    } else if is_charging {
+        BatteryState::Charging(percent)
+    } else {
+        BatteryState::Discharging(percent)
+    };
+
+    println!("[Battery] Resolved state: {state:?}");
+    Ok(state)
 }

@@ -335,10 +335,10 @@ Verify membership with `groups`. If `plugdev` is listed, you can run the daemon 
 
 | Device | Wired PID | Wireless PID | Static RGB | Battery Reporting |
 |---|---|---|---|---|
-| Razer Cobra Pro | `0x00AF` | `0x00B0` | ✅ Tested | 🔄 Simulated |
-| Razer DeathAdder V2 Pro | `0x007C` | `0x007D` | ✅ Implemented | 🔄 Simulated |
+| Razer Cobra Pro | `0x00AF` | `0x00B0` | ✅ Tested | ✅ Tested |
+| Razer DeathAdder V2 Pro | `0x007C` | `0x007D` | ✅ Implemented | 🔄 Untested (protocol mapped) |
 
-**Legend:** ✅ Tested on real hardware &nbsp;|&nbsp; 🔄 Simulated (mock loop, real USB query not yet implemented) &nbsp;|&nbsp; ❌ Not yet supported
+**Legend:** ✅ Tested on real hardware &nbsp;|&nbsp; 🔄 Untested (protocol mapped, needs hardware confirmation) &nbsp;|&nbsp; ❌ Not yet supported
 
 ### Adding a new device
 

@@ -387,6 +387,58 @@ Include the following in your PR description:
 | `wIndex` | `0x0000` | `0x0003` |
 | Payload size | 90 bytes | 37 bytes |
 
+## Reference: Battery Query Protocol
+
+Battery level and charging status are queried using a **write + sleep + read** pattern (confirmed from `razercommon.c → razer_get_usb_response`):
+
+### Step 1 — Send the query (SET_REPORT)
+
+Same parameters as lighting (`bmRequestType=0x21`, `bRequest=0x09`), but with a battery-specific payload:
+
+| Field | Battery Level | Charging Status |
+|---|---|---|
+| `[5]` data_size | `0x02` | `0x02` |
+| `[6]` command_class | `0x07` (Battery) | `0x07` (Battery) |
+| `[7]` command_id | `0x80` | `0x84` |
+| `[88]` CRC | `0x02 ^ 0x07 ^ 0x80` | `0x02 ^ 0x07 ^ 0x84` |
+
+### Step 2 — Sleep
+
+Sleep **≥1 ms** to allow the device firmware to prepare the response. Newer wireless mice (Cobra Pro group) require this delay.
+
+### Step 3 — Read the response (GET_REPORT)
+
+```
+bmRequestType = 0xA1  (DEVICE→HOST | CLASS | INTERFACE)
+bRequest      = 0x01  (HID GET_REPORT)
+wValue        = 0x0300
+wIndex        = 0x00
+```
+
+Read 90 bytes. The answer is in **`response[9]`** (`arguments[1]`):
+- Battery level: raw `0–255` → convert to percentage: `(raw as u16 * 100 / 255) as u8`
+- Charging status: `0` = discharging, `1` = charging
+
+### Step 4 — Determine BatteryState
+
+```rust
+let state = if is_charging && percent >= 100 {
+    BatteryState::Full
+} else if is_charging {
+    BatteryState::Charging(percent)
+} else {
+    BatteryState::Discharging(percent)
+};
+```
+
+### Adding battery support for a new device
+
+1. Confirm the device's `transaction_id` (from `razermouse_driver.c` or Wireshark capture).
+2. Add it to the `query_battery` call in `main.rs` — `query_battery(pid, transaction_id)`.
+3. No changes to `razer_protocol.rs` are needed — `build_battery_query_payload(transaction_id)` is generic.
+
+
+
 ## Reference: Known `transaction_id` Values
 
 | Device group | `transaction_id` | `led_id` |
