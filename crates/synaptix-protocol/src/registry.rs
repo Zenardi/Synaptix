@@ -1010,8 +1010,9 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
         capabilities.push(DeviceCapability::Sidetone);
         capabilities.push(DeviceCapability::Microphone);
     }
-    // Kraken V4 Pro is the flagship with haptics and THX Spatial Audio.
-    if product_id == 0x0568 {
+    // Kraken V4 Pro (both the headset 0x0568 and its USB receiver/hub 0x0567)
+    // supports haptics and THX Spatial Audio.
+    if matches!(product_id, 0x0567 | 0x0568) {
         capabilities.push(DeviceCapability::HapticFeedback);
         capabilities.push(DeviceCapability::ThxSpatialAudio);
     }
