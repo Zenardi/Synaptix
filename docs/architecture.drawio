@@ -1,0 +1,102 @@
+<mxfile host="65bd71144e">
+    <diagram name="Synaptix Architecture" id="synaptix_arch_01">
+        <mxGraphModel dx="517" dy="402" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="daemon_group" value="synaptix-daemon (Background Systemd User Service)" style="swimlane;whiteSpace=wrap;html=1;fillColor=#111111;fontColor=#00FF00;strokeColor=#00FF00;startSize=30;rounded=1;" parent="1" vertex="1">
+                    <mxGeometry x="120" y="440" width="560" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="daemon_router" value="Device Manager&#xa;(Router &amp; Dispatcher)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#222222;fontColor=#ffffff;strokeColor=#444444;" parent="daemon_group" vertex="1">
+                    <mxGeometry x="200" y="50" width="160" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="daemon_proto" value="Protocol Layer&#xa;(Registry, Checksum)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#222222;fontColor=#ffffff;strokeColor=#444444;" parent="daemon_group" vertex="1">
+                    <mxGeometry x="40" y="130" width="160" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="daemon_usb" value="USB Backend&#xa;(Tokio Async &amp; rusb)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#222222;fontColor=#ffffff;strokeColor=#444444;" parent="daemon_group" vertex="1">
+                    <mxGeometry x="360" y="130" width="160" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ffffff;" parent="daemon_group" source="daemon_router" target="daemon_proto" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="280" y="115"/>
+                            <mxPoint x="120" y="115"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ffffff;" parent="daemon_group" source="daemon_proto" target="daemon_usb" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="user" value="User" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;fillColor=#1e1e1e;fontColor=#ffffff;strokeColor=#00FF00;" parent="1" vertex="1">
+                    <mxGeometry x="385" y="40" width="30" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ui" value="synaptix-ui&#xa;(React / TypeScript)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#222222;fontColor=#ffffff;strokeColor=#00FF00;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="160" width="160" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="tauri" value="Tauri Bridge&#xa;(zbus Client)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#222222;fontColor=#aaaaaa;strokeColor=#444444;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="250" width="160" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="dbus" value="Linux Session D-Bus&#xa;(IPC Message Bus)" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#1e1e1e;fontColor=#00FF00;strokeColor=#00FF00;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="300" y="360" width="200" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="kernel" value="Kernel &amp; OS Space&#xa;(udev, libusb, /dev/hidraw)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#111111;fontColor=#aaaaaa;strokeColor=#444444;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="680" width="160" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="hardware" value="Razer Hardware&#xa;(Physical Device MCU)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#111111;fontColor=#00FF00;strokeColor=#00FF00;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="780" width="160" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ffffff;" parent="1" source="user" target="ui" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ffffff;" parent="1" source="ui" target="tauri" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ffffff;" parent="1" source="tauri" target="dbus" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#00FF00;strokeWidth=2;" parent="1" source="dbus" target="daemon_router" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#00FF00;strokeWidth=2;" parent="1" source="daemon_usb" target="kernel" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ffffff;" parent="1" source="kernel" target="hardware" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#00FF00;strokeWidth=2;" edge="1" parent="1" target="dbus">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="400" y="310" as="sourcePoint"/>
+                        <mxPoint x="410" y="500" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="400" y="330"/>
+                            <mxPoint x="400" y="330"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#00FF00;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="ui" target="tauri">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="410" y="320" as="sourcePoint"/>
+                        <mxPoint x="410" y="370" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="400" y="240"/>
+                            <mxPoint x="400" y="240"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#00FF00;strokeWidth=2;" edge="1" parent="1" source="user">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="410" y="230" as="sourcePoint"/>
+                        <mxPoint x="400" y="160" as="targetPoint"/>
+                        <Array as="points"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#00FF00;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="kernel" target="hardware">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="570" y="630" as="sourcePoint"/>
+                        <mxPoint x="410" y="690" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

@@ -123,9 +123,8 @@ pub fn query_battery(
         .read_control(0xA1, 0x01, 0x0300, 0x00, &mut level_response, timeout)
         .inspect_err(|e| eprintln!("[Battery] GET_REPORT (level) failed: {e:?}"))?;
 
-    // arguments[1] is at byte index 9 (see razercommon.h struct razer_report layout)
     let raw_level = level_response[9];
-    let percent = ((raw_level as u16 * 100) / 255) as u8;
+    let percent = crate::razer_protocol::parse_battery_response(&level_response);
     println!("[Battery] Raw level: {raw_level}/255 → {percent}%");
 
     // ── Charging status ───────────────────────────────────────────────────────
