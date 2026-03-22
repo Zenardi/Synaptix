@@ -348,6 +348,82 @@ pub fn build_kraken_v4_static_payload(r: u8, g: u8, b: u8) -> [u8; REPORT_LEN] {
     buf
 }
 
+// ── Headset audio / haptic commands ──────────────────────────────────────────
+//
+// These constants are based on the historical Kraken V3 HyperSense protocol
+// as documented by the community.  They share the same command class (0x04)
+// as the sensor/DPI subsystem.  The specific command IDs (0x04 for sidetone,
+// 0x07 for haptics) are **baseline guesses** and should be verified against
+// Wireshark captures on Kraken V4 Pro hardware before relying on them.
+
+/// Transaction ID for Kraken headsets (V3/V4 generation).
+/// Uses the same 0x1F slot as newer wireless mouse receivers.
+pub const TRANSACTION_ID_HEADSET: u8 = 0x1F;
+
+/// Command ID: set sidetone volume.
+/// Source: Kraken V3 community reverse-engineering.
+/// ⚠️  Wireshark verification required for Kraken V4 Pro (PID 0x0568).
+pub const CMD_ID_SET_SIDETONE: u8 = 0x04;
+
+/// Command ID: set haptic feedback intensity (HyperSense).
+/// Source: Kraken V3 HyperSense community reverse-engineering.
+/// ⚠️  Wireshark verification required for Kraken V4 Pro (PID 0x0568).
+pub const CMD_ID_SET_HAPTIC_INTENSITY: u8 = 0x07;
+
+/// Builds a 90-byte Razer HID report that sets the headset sidetone volume.
+///
+/// Sidetone lets the wearer hear their own voice through the ear cups.
+/// Level range: 0 (silent) – 100 (full).
+///
+/// ```text
+/// Byte  1    transaction_id = TRANSACTION_ID_HEADSET (0x1F)
+/// Byte  5    data_size      = 0x01  (1 argument byte)
+/// Byte  6    command_class  = CMD_CLASS_SENSOR (0x04)
+/// Byte  7    command_id     = CMD_ID_SET_SIDETONE (0x04)
+/// Byte  8    args[0]        = level (0-100)
+/// Byte 88    crc            = XOR(bytes[2..88])
+/// ```
+///
+/// ⚠️  Command IDs based on Kraken V3 baseline — verify with Wireshark on V4 Pro.
+pub fn build_set_sidetone_payload(level: u8) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = TRANSACTION_ID_HEADSET;
+    buf[5] = 0x01; // data_size: 1 argument byte
+    buf[6] = CMD_CLASS_SENSOR; // 0x04
+    buf[7] = CMD_ID_SET_SIDETONE; // 0x04
+    buf[8] = level;
+    calculate_razer_checksum(&mut buf);
+    buf
+}
+
+/// Builds a 90-byte Razer HID report that sets the haptic feedback intensity.
+///
+/// args[0] is the enable flag (0x01 when level > 0, 0x00 to disable).
+/// args[1] carries the raw intensity value (0–100).
+///
+/// ```text
+/// Byte  1    transaction_id = TRANSACTION_ID_HEADSET (0x1F)
+/// Byte  5    data_size      = 0x02  (2 argument bytes)
+/// Byte  6    command_class  = CMD_CLASS_SENSOR (0x04)
+/// Byte  7    command_id     = CMD_ID_SET_HAPTIC_INTENSITY (0x07)
+/// Byte  8    args[0]        = enable flag (0x01 if level > 0, else 0x00)
+/// Byte  9    args[1]        = level (0-100)
+/// Byte 88    crc            = XOR(bytes[2..88])
+/// ```
+///
+/// ⚠️  Command IDs based on Kraken V3 HyperSense baseline — verify with Wireshark.
+pub fn build_set_haptic_payload(level: u8) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = TRANSACTION_ID_HEADSET;
+    buf[5] = 0x02; // data_size: 2 argument bytes
+    buf[6] = CMD_CLASS_SENSOR; // 0x04
+    buf[7] = CMD_ID_SET_HAPTIC_INTENSITY; // 0x07
+    buf[8] = if level > 0 { 0x01 } else { 0x00 }; // enable flag
+    buf[9] = level;
+    calculate_razer_checksum(&mut buf);
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +674,103 @@ mod tests {
         assert_eq!(payload[11], 0x01, "dpi_y high (400)");
         assert_eq!(payload[12], 0x90, "dpi_y low (400)");
         assert_eq!(payload[88], 0xD0, "CRC mismatch for asymmetric DPI");
+    }
+
+    // ── Headset audio / haptic payload tests ─────────────────────────────────
+
+    /// Sidetone at level=50 (0x32).
+    ///
+    /// Non-zero bytes in [2..88]: [5]=0x01, [6]=0x04, [7]=0x04, [8]=0x32
+    /// CRC = 0x01 ^ 0x04 ^ 0x04 ^ 0x32 = 0x33
+    #[test]
+    fn test_sidetone_payload_generation() {
+        let payload = build_set_sidetone_payload(50);
+
+        assert_eq!(payload[0], 0x00, "status must be 0x00 (new command)");
+        assert_eq!(
+            payload[1], TRANSACTION_ID_HEADSET,
+            "transaction_id must be 0x1F"
+        );
+        assert_eq!(payload[5], 0x01, "data_size must be 1 for sidetone");
+        assert_eq!(
+            payload[6], CMD_CLASS_SENSOR,
+            "command_class must be 0x04 (audio)"
+        );
+        assert_eq!(
+            payload[7], CMD_ID_SET_SIDETONE,
+            "command_id must be 0x04 (sidetone)"
+        );
+        assert_eq!(payload[8], 50, "level byte must be at args[0] (byte 8)");
+        assert_eq!(payload[89], 0x00, "reserved byte must be 0x00");
+
+        // XOR checksum: 0x01 ^ 0x04 ^ 0x04 ^ 0x32 = 0x33
+        // Verify the full payload checksum is clean (re-XOR over [2..88] == payload[88]).
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(
+            recomputed, payload[88],
+            "XOR checksum does not match re-computed value"
+        );
+        assert_eq!(payload[88], 0x33, "CRC mismatch for sidetone level=50");
+    }
+
+    /// Sidetone at level=0 should still form a valid payload (silence).
+    #[test]
+    fn test_sidetone_payload_zero_level() {
+        let payload = build_set_sidetone_payload(0);
+        assert_eq!(payload[8], 0x00, "level byte must be 0");
+        // CRC = 0x01 ^ 0x04 ^ 0x04 = 0x01
+        assert_eq!(payload[88], 0x01, "CRC mismatch for sidetone level=0");
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(recomputed, payload[88]);
+    }
+
+    /// Haptic intensity at level=75 (0x4B), enable=0x01.
+    ///
+    /// Non-zero bytes in [2..88]: [5]=0x02, [6]=0x04, [7]=0x07, [8]=0x01, [9]=0x4B
+    /// CRC = 0x02 ^ 0x04 ^ 0x07 ^ 0x01 ^ 0x4B = 0x4B
+    #[test]
+    fn test_haptic_payload_generation() {
+        let payload = build_set_haptic_payload(75);
+
+        assert_eq!(payload[0], 0x00, "status must be 0x00 (new command)");
+        assert_eq!(
+            payload[1], TRANSACTION_ID_HEADSET,
+            "transaction_id must be 0x1F"
+        );
+        assert_eq!(payload[5], 0x02, "data_size must be 2 for haptics");
+        assert_eq!(
+            payload[6], CMD_CLASS_SENSOR,
+            "command_class must be 0x04 (audio)"
+        );
+        assert_eq!(
+            payload[7], CMD_ID_SET_HAPTIC_INTENSITY,
+            "command_id must be 0x07 (haptics)"
+        );
+        assert_eq!(payload[8], 0x01, "enable flag must be 0x01 for level > 0");
+        assert_eq!(
+            payload[9], 75,
+            "intensity level must be at args[1] (byte 9)"
+        );
+        assert_eq!(payload[89], 0x00, "reserved byte must be 0x00");
+
+        // XOR checksum: 0x02 ^ 0x04 ^ 0x07 ^ 0x01 ^ 0x4B = 0x4B
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(
+            recomputed, payload[88],
+            "XOR checksum does not match re-computed value"
+        );
+        assert_eq!(payload[88], 0x4B, "CRC mismatch for haptic level=75");
+    }
+
+    /// Haptic at level=0 must set enable flag to 0x00 (disable).
+    #[test]
+    fn test_haptic_payload_zero_disables() {
+        let payload = build_set_haptic_payload(0);
+        assert_eq!(payload[8], 0x00, "enable flag must be 0x00 when level=0");
+        assert_eq!(payload[9], 0x00, "level must be 0x00");
+        // CRC = 0x02 ^ 0x04 ^ 0x07 = 0x01
+        assert_eq!(payload[88], 0x01, "CRC mismatch for haptic level=0");
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(recomputed, payload[88]);
     }
 }

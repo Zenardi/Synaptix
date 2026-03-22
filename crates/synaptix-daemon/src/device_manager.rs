@@ -290,6 +290,112 @@ impl DeviceManager {
         }
     }
 
+    /// Sets the sidetone volume for a headset device.
+    ///
+    /// `device_id` must match a registered device with the `Sidetone` capability.
+    /// `level` is clamped to 0–100. Returns `false` if the device is unknown or
+    /// does not advertise sidetone support.
+    ///
+    /// ⚠️  USB payload based on Kraken V3 baseline — Wireshark verification needed
+    ///     for Kraken V4 Pro (PID 0x0568).
+    async fn set_sidetone(&mut self, device_id: String, level: u8) -> bool {
+        log::info!("[SetSidetone] request — device={device_id} level={level}");
+
+        let Some(device) = self.devices.get(&device_id) else {
+            log::warn!("[SetSidetone] rejected — unknown device ID: {device_id}");
+            return false;
+        };
+
+        let product_id = device.product_id.usb_pid();
+
+        // Guard: only dispatch if the registry advertises Sidetone capability.
+        let has_sidetone = get_device_profile(product_id)
+            .is_some_and(|p| p.capabilities.contains(&DeviceCapability::Sidetone));
+        if !has_sidetone {
+            log::warn!(
+                "[SetSidetone] rejected — PID=0x{product_id:04X} ({device_id}) does not advertise Sidetone capability"
+            );
+            return false;
+        }
+
+        let clamped = level.min(100);
+        log::info!("[SetSidetone] dispatching — PID=0x{product_id:04X} level={clamped}");
+
+        let result = tokio::task::spawn_blocking(move || {
+            let payload = crate::razer_protocol::build_set_sidetone_payload(clamped);
+            crate::usb_backend::send_control_transfer(product_id, &payload)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {
+                log::info!("[SetSidetone] USB transfer succeeded for {device_id}");
+                true
+            }
+            Ok(Err(e)) => {
+                log::error!("[SetSidetone] USB transfer failed for {device_id}: {e:?}");
+                false
+            }
+            Err(e) => {
+                log::error!("[SetSidetone] spawn_blocking panicked for {device_id}: {e:?}");
+                false
+            }
+        }
+    }
+
+    /// Sets the haptic feedback intensity for a HyperSense-equipped headset.
+    ///
+    /// `device_id` must match a registered device with the `HapticFeedback` capability.
+    /// `level` 0 disables haptics; 1–100 sets intensity. Returns `false` if the device
+    /// is unknown or does not advertise haptic feedback support.
+    ///
+    /// ⚠️  USB payload based on Kraken V3 HyperSense baseline — Wireshark verification
+    ///     needed for Kraken V4 Pro (PID 0x0568).
+    async fn set_haptic_intensity(&mut self, device_id: String, level: u8) -> bool {
+        log::info!("[SetHapticIntensity] request — device={device_id} level={level}");
+
+        let Some(device) = self.devices.get(&device_id) else {
+            log::warn!("[SetHapticIntensity] rejected — unknown device ID: {device_id}");
+            return false;
+        };
+
+        let product_id = device.product_id.usb_pid();
+
+        // Guard: only dispatch if the registry advertises HapticFeedback capability.
+        let has_haptics = get_device_profile(product_id)
+            .is_some_and(|p| p.capabilities.contains(&DeviceCapability::HapticFeedback));
+        if !has_haptics {
+            log::warn!(
+                "[SetHapticIntensity] rejected — PID=0x{product_id:04X} ({device_id}) does not advertise HapticFeedback capability"
+            );
+            return false;
+        }
+
+        let clamped = level.min(100);
+        log::info!("[SetHapticIntensity] dispatching — PID=0x{product_id:04X} level={clamped}");
+
+        let result = tokio::task::spawn_blocking(move || {
+            let payload = crate::razer_protocol::build_set_haptic_payload(clamped);
+            crate::usb_backend::send_control_transfer(product_id, &payload)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {
+                log::info!("[SetHapticIntensity] USB transfer succeeded for {device_id}");
+                true
+            }
+            Ok(Err(e)) => {
+                log::error!("[SetHapticIntensity] USB transfer failed for {device_id}: {e:?}");
+                false
+            }
+            Err(e) => {
+                log::error!("[SetHapticIntensity] spawn_blocking panicked for {device_id}: {e:?}");
+                false
+            }
+        }
+    }
+
     /// Emitted whenever a device's battery state changes.
     /// `new_state_json` is the serde-JSON serialisation of `BatteryState`.
     #[zbus(signal)]
