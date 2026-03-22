@@ -136,14 +136,27 @@ export default function DeviceCard({ device }: Props) {
           <motion.circle
             cx="50" cy="50" r={RADIUS}
             fill="none"
-            stroke="#44d62c"
+            stroke={charging ? "#44d62c" : "#44d62c"}
             strokeWidth={STROKE_WIDTH}
             strokeLinecap="round"
             strokeDasharray={CIRCUMFERENCE}
             initial={{ strokeDashoffset: CIRCUMFERENCE }}
-            animate={{ strokeDashoffset: targetOffset }}
-            transition={{ duration: 1.5, ease: "easeOut" }}
-            style={{ filter: "drop-shadow(0 0 6px #44d62c)" }}
+            animate={{
+              strokeDashoffset: targetOffset,
+              // Pulse the glow while charging.
+              filter: charging
+                ? [
+                    "drop-shadow(0 0 4px #44d62c)",
+                    "drop-shadow(0 0 12px #44d62c)",
+                    "drop-shadow(0 0 4px #44d62c)",
+                  ]
+                : "drop-shadow(0 0 6px #44d62c)",
+            }}
+            transition={
+              charging
+                ? { strokeDashoffset: { duration: 1.5, ease: "easeOut" }, filter: { duration: 1.8, repeat: Infinity, ease: "easeInOut" } }
+                : { duration: 1.5, ease: "easeOut" }
+            }
           />
         </svg>
 
@@ -164,16 +177,37 @@ export default function DeviceCard({ device }: Props) {
         {device.name}
       </p>
 
-      {/* ── Connection type badge ─────────────────────────────────────── */}
-      {(() => {
-        const meta = CONNECTION_META[device.connection_type] ?? CONNECTION_META.Bluetooth;
-        return (
-          <span className={`text-[10px] font-semibold tracking-widest uppercase flex items-center gap-1 ${meta.color}`}>
-            <span aria-hidden="true">{meta.icon}</span>
-            {meta.label}
-          </span>
-        );
-      })()}
+      {/* ── Connection + charging badges ──────────────────────────────── */}
+      <div className="flex items-center gap-2 flex-wrap justify-center">
+        {(() => {
+          const meta = CONNECTION_META[device.connection_type] ?? CONNECTION_META.Bluetooth;
+          return (
+            <span className={`text-[10px] font-semibold tracking-widest uppercase flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 ${meta.color}`}>
+              <span aria-hidden="true">{meta.icon}</span>
+              {meta.label}
+            </span>
+          );
+        })()}
+
+        {/* Separate charging badge — visible whenever the cable is supplying power,
+            even when the active gaming connection is the wireless dongle. */}
+        <AnimatePresence>
+          {charging && (
+            <motion.span
+              key="charging-badge"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              transition={{ duration: 0.2 }}
+              className="text-[10px] font-semibold tracking-widest uppercase flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#44d62c]/10 text-[#44d62c] border border-[#44d62c]/30"
+              aria-label="USB charging active"
+            >
+              <span aria-hidden="true">⚡</span>
+              Charging
+            </motion.span>
+          )}
+        </AnimatePresence>
+      </div>
 
       {/* ── Lighting section ─────────────────────────────────────────── */}
       <div className="w-full border-t border-white/5 pt-4 flex flex-col gap-3">

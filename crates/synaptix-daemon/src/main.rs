@@ -10,11 +10,11 @@ use synaptix_protocol::{
     BatteryState, ConnectionType, RazerDevice, RazerProductId,
 };
 
-// PIDs for the Cobra Pro, ordered wired-first so we prefer the cable
-// connection when both happen to be enumerated simultaneously.
+// PIDs for the Cobra Pro, dongle-first: when both are plugged in the dongle
+// is the active gaming connection and the cable is just charging.
 const COBRA_PRO_PIDS: &[(u16, ConnectionType)] = &[
-    (0x00AF, ConnectionType::Wired),   // USB cable
-    (0x00B0, ConnectionType::Dongle),  // HyperSpeed dongle
+    (0x00B0, ConnectionType::Dongle),  // HyperSpeed dongle (preferred)
+    (0x00AF, ConnectionType::Wired),   // USB cable (charging / wired-only mode)
 ];
 
 /// Probe USB for the first Cobra Pro PID that is currently attached and
