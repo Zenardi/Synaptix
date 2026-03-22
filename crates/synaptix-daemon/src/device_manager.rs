@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use synaptix_protocol::{
     registry::{get_device_profile, DeviceCapability},
-    BatteryState, LightingEffect, RazerDevice, RazerProductId,
+    BatteryState, DeviceSettings, LightingEffect, RazerDevice, RazerProductId,
 };
 
 /// Returns the (transaction_id, led_id) pair for a device's static lighting command.
@@ -23,6 +23,7 @@ fn lighting_params(product_id: &RazerProductId) -> (u8, u8) {
 pub struct DeviceManager {
     devices: HashMap<String, RazerDevice>,
     lighting: HashMap<String, LightingEffect>,
+    settings: HashMap<String, DeviceSettings>,
 }
 
 impl DeviceManager {
@@ -30,6 +31,7 @@ impl DeviceManager {
         Self {
             devices: HashMap::new(),
             lighting: HashMap::new(),
+            settings: crate::config::load_settings(),
         }
     }
 
@@ -57,6 +59,53 @@ impl DeviceManager {
     pub fn update_lighting(&mut self, id: &str, effect: LightingEffect) {
         if self.devices.contains_key(id) {
             self.lighting.insert(id.to_string(), effect);
+        }
+    }
+
+    /// Dispatches saved settings to all registered devices via USB.
+    /// Called once at daemon startup after devices are registered.
+    pub fn apply_saved_settings(&self) {
+        for (device_id, device) in &self.devices {
+            let Some(settings) = self.settings.get(device_id) else {
+                continue;
+            };
+
+            let pid = device.product_id.usb_pid();
+            let (txn_id, led_id) = lighting_params(&device.product_id);
+
+            if let Some(effect) = &settings.lighting {
+                let payload = match effect {
+                    synaptix_protocol::LightingEffect::Static([r, g, b]) => {
+                        crate::razer_protocol::build_static_color_payload(
+                            txn_id, led_id, *r, *g, *b,
+                        )
+                    }
+                    synaptix_protocol::LightingEffect::Breathing([r, g, b]) => {
+                        crate::razer_protocol::build_breathing_payload(txn_id, led_id, *r, *g, *b)
+                    }
+                    synaptix_protocol::LightingEffect::Spectrum => {
+                        crate::razer_protocol::build_spectrum_payload(txn_id, led_id)
+                    }
+                };
+                if let Err(e) = crate::usb_backend::send_control_transfer(pid, &payload) {
+                    log::warn!("[AutoApply] Lighting failed for {device_id}: {e:?}");
+                } else {
+                    log::info!("[AutoApply] Lighting restored for {device_id}");
+                }
+            }
+
+            if let Some(dpi) = settings.dpi {
+                let has_dpi = get_device_profile(pid)
+                    .is_some_and(|p| p.capabilities.contains(&DeviceCapability::DpiControl));
+                if has_dpi {
+                    let payload = crate::razer_protocol::build_set_dpi_payload(txn_id, dpi, dpi);
+                    if let Err(e) = crate::usb_backend::send_control_transfer(pid, &payload) {
+                        log::warn!("[AutoApply] DPI failed for {device_id}: {e:?}");
+                    } else {
+                        log::info!("[AutoApply] DPI {dpi} restored for {device_id}");
+                    }
+                }
+            }
         }
     }
 }
@@ -110,6 +159,11 @@ impl DeviceManager {
         println!("[SetLighting] Resolved USB PID: 0x{product_id:04X}, txn_id=0x{txn_id:02X}, led_id=0x{led_id:02X}");
 
         self.lighting.insert(device_id.clone(), effect.clone());
+
+        // Persist the new lighting preference.
+        let entry = self.settings.entry(device_id.clone()).or_default();
+        entry.lighting = Some(effect.clone());
+        crate::config::save_settings(&self.settings);
 
         println!("[SetLighting] Dispatching {effect:?} to USB backend …");
 
@@ -191,6 +245,10 @@ impl DeviceManager {
         match result {
             Ok(Ok(())) => {
                 log::info!("[SetDpi] USB transfer succeeded for {device_id}");
+                // Persist the new DPI preference.
+                let entry = self.settings.entry(device_id.clone()).or_default();
+                entry.dpi = Some(x);
+                crate::config::save_settings(&self.settings);
                 true
             }
             Ok(Err(e)) => {

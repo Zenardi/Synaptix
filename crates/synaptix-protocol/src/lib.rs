@@ -39,6 +39,14 @@ pub enum LightingEffect {
     Spectrum,
 }
 
+/// Persistent user preferences for a single device.
+/// Stored in `~/.config/synaptix/devices.json` and auto-applied on daemon start.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeviceSettings {
+    pub lighting: Option<LightingEffect>,
+    pub dpi: Option<u16>,
+}
+
 /// A sensor (optical / laser) configuration command for a mouse.
 ///
 /// Wire format (serde defaults):

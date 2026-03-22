@@ -876,6 +876,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "directories"
+version = "5.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a49173b84e034382284f27f1af4dcbbd231ffa358c0fe316541a7337f376a35"
+dependencies = [
+ "dirs-sys 0.4.1",
+]
+
+[[package]]
 name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3954,6 +3963,7 @@ dependencies = [
 name = "synaptix-daemon"
 version = "0.3.0"
 dependencies = [
+ "directories",
  "env_logger",
  "futures-util",
  "glib",

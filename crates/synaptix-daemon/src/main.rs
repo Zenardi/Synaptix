@@ -1,3 +1,4 @@
+mod config;
 mod device_manager;
 mod razer_protocol;
 mod tray;
@@ -64,6 +65,9 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             capabilities: cobra_capabilities,
         },
     );
+
+    // Auto-apply any persisted settings (lighting, DPI) to hardware at startup.
+    tokio::task::block_in_place(|| manager.apply_saved_settings());
 
     let conn = match zbus::connection::Builder::session()
         .and_then(|b| b.name("org.synaptix.Daemon"))
