@@ -1,8 +1,9 @@
-use synaptix_protocol::RazerDevice;
+use futures_util::StreamExt;
+use synaptix_protocol::BatteryState;
+use tauri::{AppHandle, Emitter};
 
-/// Proxy for the `org.synaptix.Daemon` D-Bus interface exposed by
-/// `synaptix-daemon`. The Tauri layer is strictly a consumer — it never
-/// touches hardware directly.
+/// Proxy for the `org.synaptix.Daemon` D-Bus interface.
+/// Strictly a consumer — no hardware logic lives here.
 #[zbus::proxy(
     interface = "org.synaptix.Daemon",
     default_service = "org.synaptix.Daemon",
@@ -10,12 +11,32 @@ use synaptix_protocol::RazerDevice;
 )]
 trait SynaptixDaemon {
     fn get_devices(&self) -> zbus::Result<Vec<String>>;
+
+    /// Signal emitted by the daemon whenever a device's battery state changes.
+    #[zbus(signal)]
+    fn battery_changed(&self, device_id: &str, new_state_json: &str) -> zbus::Result<()>;
 }
 
-/// Tauri IPC command: connects to the session bus, queries the daemon, and
-/// returns deserialised `RazerDevice` values to the React frontend.
+/// Flat representation returned to the React frontend. The daemon injects
+/// `device_id` into the JSON before sending, so we deserialise it here.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeviceEntry {
+    pub device_id: String,
+    pub name: String,
+    pub product_id: serde_json::Value,
+    pub battery_state: BatteryState,
+}
+
+/// Payload carried by the Tauri `device-battery-updated` event.
+#[derive(Clone, serde::Serialize)]
+struct BatteryUpdatePayload {
+    device_id: String,
+    battery_state: BatteryState,
+}
+
+/// Tauri IPC command: fetches the current device list from the daemon.
 #[tauri::command]
-async fn get_razer_devices() -> Result<Vec<RazerDevice>, String> {
+async fn get_razer_devices() -> Result<Vec<DeviceEntry>, String> {
     let conn = zbus::Connection::session()
         .await
         .map_err(|e| e.to_string())?;
@@ -24,22 +45,57 @@ async fn get_razer_devices() -> Result<Vec<RazerDevice>, String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    let device_jsons = proxy
-        .get_devices()
-        .await
-        .map_err(|e| e.to_string())?;
+    let jsons = proxy.get_devices().await.map_err(|e| e.to_string())?;
 
-    let devices = device_jsons
+    let entries = jsons
         .iter()
-        .filter_map(|json| serde_json::from_str::<RazerDevice>(json).ok())
+        .filter_map(|json| serde_json::from_str::<DeviceEntry>(json).ok())
         .collect();
 
-    Ok(devices)
+    Ok(entries)
+}
+
+/// Background task: subscribes to the daemon's `BatteryChanged` D-Bus signal
+/// and forwards each event to the React frontend via Tauri's event system.
+async fn listen_for_signals(
+    app: AppHandle,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let conn = zbus::Connection::session().await?;
+    let proxy = SynaptixDaemonProxy::new(&conn).await?;
+    let mut stream = proxy.receive_battery_changed().await?;
+
+    while let Some(signal) = stream.next().await {
+        if let Ok(args) = signal.args() {
+            let device_id = args.device_id().to_string();
+            let new_state_json = args.new_state_json().to_string();
+
+            if let Ok(battery_state) = serde_json::from_str::<BatteryState>(&new_state_json) {
+                let payload = BatteryUpdatePayload {
+                    device_id,
+                    battery_state,
+                };
+                // emit() broadcasts to all windows — Tauri v2 API.
+                app.emit("device-battery-updated", payload).ok();
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            let handle = app.handle().clone();
+            // Spawn the D-Bus signal listener for the lifetime of the app.
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = listen_for_signals(handle).await {
+                    eprintln!("D-Bus signal listener failed: {e}");
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![get_razer_devices])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

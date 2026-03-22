@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import DeviceCard from "./components/DeviceCard";
 
 // Mirror of the Rust BatteryState enum after serde serialisation.
@@ -10,9 +11,17 @@ export type BatteryState =
   | { Discharging: number }
   | "Full";
 
+// Matches the DeviceEntry struct returned by the Tauri `get_razer_devices` command.
 export interface RazerDevice {
+  device_id: string;
   name: string;
   product_id: unknown;
+  battery_state: BatteryState;
+}
+
+// Matches BatteryUpdatePayload emitted by the Tauri signal listener.
+interface BatteryUpdatePayload {
+  device_id: string;
   battery_state: BatteryState;
 }
 
@@ -32,10 +41,29 @@ function App() {
   const [devices, setDevices] = useState<RazerDevice[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Initial load
   useEffect(() => {
     invoke<RazerDevice[]>("get_razer_devices")
       .then(setDevices)
       .catch((err: unknown) => setError(String(err)));
+  }, []);
+
+  // Real-time battery updates via D-Bus signal → Tauri event bridge
+  useEffect(() => {
+    const unlisten = listen<BatteryUpdatePayload>(
+      "device-battery-updated",
+      (event) => {
+        const { device_id, battery_state } = event.payload;
+        setDevices((prev) =>
+          prev.map((d) =>
+            d.device_id === device_id ? { ...d, battery_state } : d,
+          ),
+        );
+      },
+    );
+    return () => {
+      unlisten.then((f) => f());
+    };
   }, []);
 
   return (
@@ -60,8 +88,8 @@ function App() {
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {devices.map((device, i) => (
-            <DeviceCard key={i} device={device} />
+          {devices.map((device) => (
+            <DeviceCard key={device.device_id} device={device} />
           ))}
         </div>
       </div>
