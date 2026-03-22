@@ -70,6 +70,14 @@ Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https:
       - [Keyboards (106 PIDs)](#keyboards-106-pids)
     - [Adding a new device](#adding-a-new-device)
   - [Contributing](#contributing)
+    - [Reporting Issues \& Requesting Features](#reporting-issues--requesting-features)
+    - [Local Development Setup](#local-development-setup)
+      - [1. System packages (Ubuntu / Debian / Pop!\_OS)](#1-system-packages-ubuntu--debian--pop_os)
+      - [2. Rust toolchain](#2-rust-toolchain)
+      - [3. Node.js 22](#3-nodejs-22)
+      - [4. Clone and bootstrap](#4-clone-and-bootstrap)
+      - [5. Run the full check suite locally](#5-run-the-full-check-suite-locally)
+      - [6. Run in development](#6-run-in-development)
     - [Workflow](#workflow)
     - [Code style](#code-style)
   - [License](#license)
@@ -216,7 +224,8 @@ npm run tauri dev
 
 Vite serves the React frontend at `http://localhost:5173` and Tauri wraps it in a frameless native window. Hot-module replacement (HMR) is active — React changes reflect instantly.
 
-> **Note:** The daemon must be running before you open the UI, otherwise the D-Bus proxy will fail to connect and no devices will be displayed.
+> [!NOTE]
+> The daemon must be running before you open the UI, otherwise the D-Bus proxy will fail to connect and no devices will be displayed.
 
 ---
 

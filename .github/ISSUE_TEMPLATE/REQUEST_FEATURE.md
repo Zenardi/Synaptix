@@ -1,5 +1,5 @@
 ---
-name: Feature Request (AI-Ready)
+name: Feature Request
 about: Propose a new hardware feature or device integration.
 title: '[FEATURE] '
 labels: enhancement
