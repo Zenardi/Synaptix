@@ -330,31 +330,71 @@ Verify membership with `groups`. If `plugdev` is listed, you can run the daemon 
 
 ## Supported Devices
 
-> Only devices listed below have been tested. Static RGB lighting is the only effect currently implemented.
-> If your device is not listed, the daemon will compile and run but **will not find your hardware** until its Product ID and protocol parameters are added.
+> Only devices in the **Hardware-Tested** table have been verified on physical hardware. The **Registry Coverage** table lists all devices whose USB PIDs are mapped in `synaptix-protocol::registry` — these will be auto-identified by the daemon, but lighting/battery commands require their protocol parameters to also be wired into the daemon.
+
+### Hardware-Tested
 
 | Device | Wired PID | Wireless PID | Static RGB | Battery Reporting |
 |---|---|---|---|---|
 | Razer Cobra Pro | `0x00AF` | `0x00B0` | ✅ Tested | ✅ Tested |
-| Razer DeathAdder V2 Pro | `0x007C` | `0x007D` | ✅ Implemented | 🔄 Untested (protocol mapped) |
+| Razer DeathAdder V2 Pro | `0x007C` | `0x007D` | ✅ Implemented | 🔄 Untested |
 
-**Legend:** ✅ Tested on real hardware &nbsp;|&nbsp; 🔄 Untested (protocol mapped, needs hardware confirmation) &nbsp;|&nbsp; ❌ Not yet supported
+**Legend:** ✅ Verified on real hardware &nbsp;|&nbsp; 🔄 Protocol mapped, needs hardware confirmation
+
+---
+
+### Registry Coverage
+
+The device registry maps **209+ PIDs** across mice and keyboards for automatic USB identification.
+
+#### Mice (103 PIDs)
+
+| Family | Notable Models |
+|---|---|
+| **Abyssus** | Abyssus, 1800, 2000, Essential, V2, Elite D.Va Edition |
+| **Atheris** | Atheris (Receiver) |
+| **Basilisk** | Basilisk, Essential, X HyperSpeed, V2, Ultimate, V3, V3 Pro, V3 X HyperSpeed, V3 35K, V3 Pro 35K, V3 Pro 35K Phantom Green |
+| **Cobra** | Cobra, Cobra Pro (Wired/Wireless) |
+| **DeathAdder** | 3.5G, 2013, 1800, Chroma, Elite, Essential, V2, V2 Mini, V2 Lite, V2 Pro, V2 X HyperSpeed, V3, V3 Pro, V3 HyperSpeed, V4 Pro |
+| **Diamondback** | Diamondback Chroma |
+| **Imperator** | Imperator |
+| **Lancehead** | Lancehead (Wired/Wireless), Lancehead Wireless, Lancehead TE |
+| **Mamba** | Mamba 2012, Mamba Chroma, Mamba TE, Mamba Elite, Mamba Wireless |
+| **Naga** | Naga, Naga 2012/2014, Naga Chroma, Naga Hex (V2), Naga Epic Chroma, Naga Trinity, Naga X, Naga Pro, Naga V2 Pro, Naga V2 HyperSpeed, Naga Left-Handed 2020 |
+| **Orochi** | Orochi 2011/2013, Orochi (Wired), Orochi V2 |
+| **Ouroboros** | Ouroboros |
+| **Pro Click** | Pro Click, Pro Click Mini, Pro Click V2, Pro Click V2 Vertical |
+| **Taipan** | Taipan |
+| **Viper** | Viper, Viper 8KHz, Viper Mini, Viper Mini SE, Viper Ultimate, Viper V2 Pro, Viper V3 HyperSpeed, Viper V3 Pro |
+
+#### Keyboards (106 PIDs)
+
+| Family | Notable Models |
+|---|---|
+| **Anansi** | Anansi |
+| **BlackWidow** | Ultimate 2012/2013/2016, Stealth, Chroma (V2), TE Chroma, X Chroma, Elite, Lite, Essential, 2019, V3, V3 Pro, V3 Mini HyperSpeed, V3 TKL, V4, V4 Pro, V4 75%, V4 X, V4 Mini HyperSpeed, V4 TKL HyperSpeed |
+| **Cynosa** | Cynosa Chroma, Cynosa Chroma Pro, Cynosa Lite, Cynosa V2 |
+| **DeathStalker** | Expert, Essential, Chroma, V2, V2 Pro, V2 Pro TKL |
+| **Huntsman** | Huntsman, Huntsman Elite, Huntsman TE, Huntsman Mini (Analog/JP), Huntsman V2 (Analog/TKL), Huntsman V3 Pro (TKL/Mini/8KHz) |
+| **Nostromo / Tartarus / Orbweaver** | Nostromo, Tartarus, Tartarus Chroma, Tartarus V2, Tartarus Pro, Orbweaver, Orbweaver Chroma |
+| **Ornata** | Ornata, Ornata Chroma, Ornata V2, Ornata V3 (X/TKL) |
+| **Razer Blade** | Blade Stealth (2016–2020), Blade QHD, Blade 15 (2018–2025), Blade 16 (2023/2025), Blade 17 Pro (2021), Blade 18 (2023–2025), Blade 14 (2021–2025), Blade Pro (2016–2020), Book 2020 |
 
 ### Adding a new device
 
-1. Add its `RazerProductId` variants and `usb_pid()` mapping in `crates/synaptix-protocol/src/lib.rs`.
+1. Add its PIDs and display name to `get_device_profile()` in `crates/synaptix-protocol/src/registry.rs`.
 2. Add its `(transaction_id, led_id)` entry to `lighting_params()` in `crates/synaptix-daemon/src/device_manager.rs`.
-3. Seed it in `main.rs` (or replace the mock with a real USB enumeration loop).
-4. Open a PR with the hardware model and PID source (e.g., a link to the OpenRazer driver header).
+3. If it needs battery polling, add it to the loop in `main.rs`.
+4. Open a PR with the hardware model and PID source.
+
+> [!TIP]
+> See the detailed contributor guide: [ADD_NEW_DEVICES.md](./ADD_NEW_DEVICES.md)
 
 ---
 
 ## Contributing
 
 Contributions are welcome. Please follow the development rules below to keep the architecture clean.
-
-> [!TIP]
-> **Adding a new device?** See the dedicated guide: [ADD_NEW_DEVICES.md](./ADD_NEW_DEVICES.md)
 
 ### Workflow
 
