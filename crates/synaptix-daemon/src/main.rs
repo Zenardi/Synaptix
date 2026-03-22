@@ -52,12 +52,16 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     .ok();
 
     let mut manager = DeviceManager::new();
+    let cobra_capabilities = get_device_profile(cobra_pid)
+        .map(|p| p.capabilities)
+        .unwrap_or_default();
     manager.add_device(
         "cobra-pro".to_string(),
         RazerDevice {
             name: cobra_name.clone(),
             product_id: RazerProductId::CobraProWireless,
             battery_state: initial_battery.clone(),
+            capabilities: cobra_capabilities,
         },
     );
 

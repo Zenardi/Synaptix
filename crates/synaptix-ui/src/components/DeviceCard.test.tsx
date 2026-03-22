@@ -43,6 +43,7 @@ const INITIAL_DEVICE: RazerDevice = {
   name: "Razer DeathAdder V2 Pro",
   product_id: "DeathAdderV2Pro",
   battery_state: { Discharging: 75 },
+  capabilities: [],
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

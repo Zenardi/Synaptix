@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import type { RazerDevice } from "../App";
 import { getBatteryLevel, isCharging } from "../App";
+import DpiControl from "./DpiControl";
 
 const RADIUS = 45;
 const STROKE_WIDTH = 7;
@@ -213,6 +214,11 @@ export default function DeviceCard({ device }: Props) {
           )}
         </AnimatePresence>
       </div>
+
+      {/* ── DPI section — only for devices with sensor/DPI capability ── */}
+      {device.capabilities.some((c) => c === "DpiControl") && (
+        <DpiControl deviceId={device.device_id} />
+      )}
     </div>
   );
 }

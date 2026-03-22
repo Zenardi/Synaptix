@@ -97,6 +97,7 @@ pub struct RazerDevice {
     pub name: String,
     pub product_id: RazerProductId,
     pub battery_state: BatteryState,
+    pub capabilities: Vec<registry::DeviceCapability>,
 }
 
 #[cfg(test)]
@@ -109,6 +110,7 @@ mod tests {
             name: "Razer DeathAdder V2 Pro".to_string(),
             product_id: RazerProductId::DeathAdderV2Pro,
             battery_state: BatteryState::Discharging(75),
+            capabilities: vec![],
         };
 
         let json = serde_json::to_string(&device).expect("serialization failed");

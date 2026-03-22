@@ -18,6 +18,7 @@ export interface RazerDevice {
   name: string;
   product_id: unknown;
   battery_state: BatteryState;
+  capabilities: (string | Record<string, unknown>)[];
 }
 
 // Matches BatteryUpdatePayload emitted by the Tauri signal listener.

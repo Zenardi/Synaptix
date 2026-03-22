@@ -14,6 +14,8 @@ trait SynaptixDaemon {
 
     fn set_lighting(&self, device_id: &str, effect_json: &str) -> zbus::Result<bool>;
 
+    fn set_dpi(&self, device_id: &str, x: u16, y: u16) -> zbus::Result<bool>;
+
     /// Signal emitted by the daemon whenever a device's battery state changes.
     #[zbus(signal)]
     fn battery_changed(&self, device_id: &str, new_state_json: &str) -> zbus::Result<()>;
@@ -27,6 +29,7 @@ pub struct DeviceEntry {
     pub name: String,
     pub product_id: serde_json::Value,
     pub battery_state: BatteryState,
+    pub capabilities: Vec<serde_json::Value>,
 }
 
 /// Payload carried by the Tauri `device-battery-updated` event.
@@ -71,6 +74,21 @@ async fn set_device_lighting(device_id: String, effect: LightingEffect) -> Resul
     let effect_json = serde_json::to_string(&effect).map_err(|e| e.to_string())?;
     proxy
         .set_lighting(&device_id, &effect_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tauri IPC command: sets the DPI for a device via the daemon (x == y for uniform DPI).
+#[tauri::command]
+async fn set_device_dpi(device_id: String, dpi: u16) -> Result<bool, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| e.to_string())?;
+    let proxy = SynaptixDaemonProxy::new(&conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    proxy
+        .set_dpi(&device_id, dpi, dpi)
         .await
         .map_err(|e| e.to_string())
 }
@@ -129,7 +147,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_razer_devices,
-            set_device_lighting
+            set_device_lighting,
+            set_device_dpi,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

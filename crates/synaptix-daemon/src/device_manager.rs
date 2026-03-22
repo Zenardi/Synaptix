@@ -234,6 +234,7 @@ mod tests {
             name: "Razer DeathAdder V2 Pro".to_string(),
             product_id: RazerProductId::DeathAdderV2Pro,
             battery_state: BatteryState::Discharging(75),
+            capabilities: vec![],
         }
     }
 
