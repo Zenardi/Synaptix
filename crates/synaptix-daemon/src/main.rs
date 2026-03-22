@@ -158,4 +158,3 @@ fn main() {
     // Hand control to GTK — this blocks until the process is killed.
     gtk::main();
 }
-

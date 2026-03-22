@@ -58,10 +58,9 @@ pub fn generate_battery_icon(percentage: u8) -> tray_icon::Icon {
     for y in 0..H {
         for x in 0..W {
             let in_body = x >= body_x1 && x <= body_x2 && y >= body_y1 && y <= body_y2;
-            let on_border = in_body
-                && (x == body_x1 || x == body_x2 || y == body_y1 || y == body_y2);
-            let in_fill =
-                x >= inner_x1 && x < inner_x1 + fill_px && y >= inner_y1 && y < inner_y2;
+            let on_border =
+                in_body && (x == body_x1 || x == body_x2 || y == body_y1 || y == body_y2);
+            let in_fill = x >= inner_x1 && x < inner_x1 + fill_px && y >= inner_y1 && y < inner_y2;
             // Positive terminal cap: 3 px wide, vertically centred
             let cap_x = body_x2 + 1..=body_x2 + 3;
             let in_cap = cap_x.contains(&x) && (13..=18).contains(&y);
@@ -101,10 +100,7 @@ pub fn start_tray(rx: Receiver<TrayUpdate>) {
         while let Ok(update) = rx.try_recv() {
             let icon = generate_battery_icon(update.percentage);
             let suffix = if update.is_charging { " ⚡" } else { "" };
-            let tooltip = format!(
-                "{}: {}%{}",
-                update.device_name, update.percentage, suffix
-            );
+            let tooltip = format!("{}: {}%{}", update.device_name, update.percentage, suffix);
             tray.set_icon(Some(icon)).ok();
             tray.set_tooltip(Some(&tooltip)).ok();
         }
