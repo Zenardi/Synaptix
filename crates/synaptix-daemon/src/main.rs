@@ -158,10 +158,10 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
 
     log::info!("Synaptix Daemon running on org.synaptix.Daemon at /org/synaptix/Daemon");
 
-    // ── Connection-watch task (every 3 s) ────────────────────────────────────
+    // ── Connection-watch task (every 1 s) ────────────────────────────────────
     // Cheap USB descriptor scan — no device open, no I/O. Fires a D-Bus signal
     // the moment the user switches from dongle to cable (or vice versa) so the
-    // React UI updates within seconds without a reload.
+    // React UI updates within one second without a reload.
     let conn_watch = conn.clone();
     let shared_watch = std::sync::Arc::clone(&shared);
     let mut watch_pid = initial_pid;
@@ -178,7 +178,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
 
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
             let (new_pid, new_product_id, new_conn, new_name) =
                 tokio::task::spawn_blocking(detect_cobra_pro)
@@ -236,11 +236,14 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
 
             // Immediately update battery state after a connection change.
             //
-            // Wired: the Cobra Pro wired interface (0x00AF) returns 0 for battery
-            // level — the mouse runs off USB power and the firmware stops tracking
-            // the internal cell. We must NOT query USB here. Instead, read the
-            // last known level from DeviceManager and re-wrap it as Charging so
-            // the UI shows the correct percentage + charging badge.
+            // Wired: Wait 500 ms for the USB device to finish enumeration, then
+            // query the wired interface (0x00AF) with up to 3 retries. The Cobra
+            // Pro wired firmware supports battery queries (confirmed from reference
+            // driver), but needs a moment after plug-in to respond.
+            // If ALL retries return 0, do NOT emit — it means the device isn't
+            // ready yet; the next 60-second poll will pick it up. The UI's
+            // connection-type-based charging badge already shows ⚡ Charging
+            // instantly via the ConnectionChanged signal emitted above.
             //
             // Dongle: query USB normally (cable-presence check inside query_battery
             // handles the charging flag correctly).
@@ -248,25 +251,70 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             // Bluetooth: no USB interface available — skip.
             let fresh_state_opt: Option<BatteryState> = match &new_conn {
                 ConnectionType::Wired => {
-                    // Read current level from in-memory state without a USB query.
-                    let current_pct = {
+                    // Short pause so the kernel HID driver finishes binding before
+                    // we try to send a control transfer.
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+                    let mut wired_state: Option<BatteryState> = None;
+                    for attempt in 1..=3u8 {
+                        let pid_c = new_pid;
+                        let result = tokio::task::spawn_blocking(move || {
+                            usb_backend::query_battery(pid_c, txn_id, wait_us, &ConnectionType::Wired)
+                        })
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok());
+
+                        match result {
+                            Some(BatteryState::Full) => {
+                                wired_state = Some(BatteryState::Full);
+                                break;
+                            }
+                            Some(BatteryState::Charging(n)) if n > 0 => {
+                                wired_state = Some(BatteryState::Charging(n));
+                                break;
+                            }
+                            Some(BatteryState::Discharging(n)) if n > 0 => {
+                                // Wired = always charging; override variant.
+                                wired_state = Some(BatteryState::Charging(n));
+                                break;
+                            }
+                            _ => {
+                                log::warn!("[Battery] Wired query attempt {attempt} returned 0 or failed — retrying…");
+                                tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+                            }
+                        }
+                    }
+
+                    if wired_state.is_none() {
+                        // USB returned 0 on all attempts (device still initialising
+                        // or genuinely 0%). Fall back to the last known level so
+                        // we don't overwrite a valid wireless reading with 0%.
                         if let Ok(bat_ref) = conn_watch
                             .object_server()
                             .interface::<_, DeviceManager>("/org/synaptix/Daemon")
                             .await
                         {
                             let iface = bat_ref.get().await;
-                            iface.devices.get("cobra-pro").map(|d| match &d.battery_state {
-                                BatteryState::Charging(n) | BatteryState::Discharging(n) => *n,
-                                BatteryState::Full => 100,
-                            })
-                        } else {
-                            None
+                            wired_state = iface.devices.get("cobra-pro").and_then(|d| {
+                                let pct = match &d.battery_state {
+                                    BatteryState::Charging(n) | BatteryState::Discharging(n) => *n,
+                                    BatteryState::Full => 100,
+                                };
+                                // Only emit if we have a meaningful level.
+                                if pct > 0 {
+                                    Some(if pct >= 100 { BatteryState::Full } else { BatteryState::Charging(pct) })
+                                } else {
+                                    // No valid level anywhere — skip the battery emit.
+                                    // The ⚡ Charging badge still shows via connection_type.
+                                    log::warn!("[Battery] No valid level for Wired device; skipping battery emit.");
+                                    None
+                                }
+                            });
                         }
-                    };
-                    current_pct.map(|pct| {
-                        if pct >= 100 { BatteryState::Full } else { BatteryState::Charging(pct) }
-                    })
+                    }
+
+                    wired_state
                 }
                 ConnectionType::Dongle => {
                     let conn_c = new_conn.clone();
