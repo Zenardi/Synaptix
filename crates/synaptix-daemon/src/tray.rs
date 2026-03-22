@@ -170,7 +170,7 @@ pub fn start_tray(rx: Receiver<TrayUpdate>) {
                     // Fire when crossing a threshold downward for the first time.
                     if pct <= threshold
                         && !notified.contains(&threshold)
-                        && last_pct.map_or(true, |prev| prev > threshold)
+                        && last_pct.is_none_or(|prev| prev > threshold)
                     {
                         notify_low_battery(&update.device_name, pct);
                         notified.insert(threshold);
