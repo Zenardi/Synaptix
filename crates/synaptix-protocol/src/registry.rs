@@ -564,6 +564,12 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
         ),
         0x026A => ("Razer Book (2020)", DeviceType::Keyboard, false),
 
+        // ── Audio / Headsets ──────────────────────────────────────────────
+        0x0527 => ("Razer Kraken Ultimate", DeviceType::Audio, false),
+        0x0560 => ("Razer Kraken V3 HyperSense", DeviceType::Audio, false),
+        0x0567 => ("Razer Kraken V4 Pro (Receiver)", DeviceType::Audio, false),
+        0x0568 => ("Razer Kraken V4 Pro", DeviceType::Audio, false),
+
         _ => return None,
     };
 

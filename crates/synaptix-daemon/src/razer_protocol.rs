@@ -47,6 +47,14 @@ pub const LED_BACKLIGHT: u8 = 0x05;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Calculates and inserts the Razer HID report checksum in place.
+///
+/// The checksum is the XOR of bytes `[2..88]` stored at index `88`.
+/// Byte `89` is always `0x00` (reserved). Protocol source: `razercommon.c`.
+fn calculate_razer_checksum(payload: &mut [u8; REPORT_LEN]) {
+    payload[88] = payload[2..88].iter().fold(0u8, |acc, &byte| acc ^ byte);
+}
+
 /// Builds a 90-byte Razer HID report for the Extended Matrix Static effect.
 ///
 /// `transaction_id` and `led_id` are device-specific — use the `TRANSACTION_ID_*`
@@ -94,8 +102,7 @@ pub fn build_static_color_payload(
     buf[15] = g;
     buf[16] = b;
 
-    // CRC: XOR of bytes 2..88 (razercommon.c → razer_calculate_crc).
-    buf[88] = buf[2..88].iter().fold(0u8, |acc, &byte| acc ^ byte);
+    calculate_razer_checksum(&mut buf);
 
     buf
 }
@@ -123,7 +130,7 @@ pub fn build_battery_query_payload(transaction_id: u8) -> [u8; REPORT_LEN] {
     buf[5] = 0x02; // data_size
     buf[6] = CMD_CLASS_BATTERY;
     buf[7] = CMD_ID_BATTERY_LEVEL;
-    buf[88] = buf[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+    calculate_razer_checksum(&mut buf);
     buf
 }
 
@@ -137,7 +144,32 @@ pub fn build_charging_query_payload(transaction_id: u8) -> [u8; REPORT_LEN] {
     buf[5] = 0x02; // data_size
     buf[6] = CMD_CLASS_BATTERY;
     buf[7] = CMD_ID_CHARGING_STATUS;
-    buf[88] = buf[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+    calculate_razer_checksum(&mut buf);
+    buf
+}
+
+/// Builds a 90-byte Razer HID report for the Kraken V4 Pro static lighting.
+///
+/// The Kraken V4 Pro uses a simplified header layout (no VARSTORE/LED zone):
+/// ```text
+/// Byte  1     transaction_id = 0xFF
+/// Byte  5     data_size      = 0x05
+/// Byte  6     command_class  = 0x0F
+/// Byte  7     command_id     = 0x02
+/// Bytes 8-10  args[0-2]      = r, g, b
+/// Byte 88     crc            = XOR(bytes[2..88])
+/// Byte 89     reserved       = 0x00
+/// ```
+pub fn build_kraken_v4_static_payload(r: u8, g: u8, b: u8) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = 0xFF;
+    buf[5] = 0x05;
+    buf[6] = 0x0F;
+    buf[7] = 0x02;
+    buf[8] = r;
+    buf[9] = g;
+    buf[10] = b;
+    calculate_razer_checksum(&mut buf);
     buf
 }
 
@@ -249,5 +281,24 @@ mod tests {
             payload[88], 0x85,
             "CRC should be same regardless of transaction_id"
         );
+    }
+
+    /// Kraken V4 Pro Static Red (255, 0, 0).
+    /// Non-zero bytes in [2..88]: [5]=0x05, [6]=0x0F, [7]=0x02, [8]=0xFF
+    /// CRC = 0x05 ^ 0x0F ^ 0x02 ^ 0xFF = 0xF7
+    #[test]
+    fn test_kraken_v4_static_payload_red() {
+        let mut expected = [0u8; 90];
+        expected[1] = 0xFF;
+        expected[5] = 0x05;
+        expected[6] = 0x0F;
+        expected[7] = 0x02;
+        expected[8] = 0xFF; // R
+        expected[9] = 0x00; // G
+        expected[10] = 0x00; // B
+        expected[88] = 0xF7; // Pre-calculated XOR
+
+        let got = build_kraken_v4_static_payload(0xFF, 0x00, 0x00);
+        assert_eq!(got, expected, "Kraken V4 Pro red payload mismatch");
     }
 }

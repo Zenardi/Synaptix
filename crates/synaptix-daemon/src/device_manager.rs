@@ -102,6 +102,7 @@ impl DeviceManager {
         };
 
         let product_id = device.product_id.usb_pid();
+        let is_kraken_v4 = device.product_id == RazerProductId::KrakenV4Pro;
         let (txn_id, led_id) = lighting_params(&device.product_id);
         println!("[SetLighting] Resolved USB PID: 0x{product_id:04X}, txn_id=0x{txn_id:02X}, led_id=0x{led_id:02X}");
 
@@ -112,8 +113,11 @@ impl DeviceManager {
 
         // Await the blocking task so errors are never swallowed.
         let result = tokio::task::spawn_blocking(move || {
-            let payload =
-                crate::razer_protocol::build_static_color_payload(txn_id, led_id, r, g, b);
+            let payload = if is_kraken_v4 {
+                crate::razer_protocol::build_kraken_v4_static_payload(r, g, b)
+            } else {
+                crate::razer_protocol::build_static_color_payload(txn_id, led_id, r, g, b)
+            };
             crate::usb_backend::send_control_transfer(product_id, &payload)
         })
         .await;
