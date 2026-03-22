@@ -1,9 +1,3 @@
-As an SRE, you know that a high-level block diagram isn't enough when debugging raw USB protocol timings or D-Bus races. We need a low-level mechanical view that maps the Rust code modules directly to the operating system primitives and physical wire protocols.
-
-Here is the `DEEP_DIVE_ARCHITECTURE.md` file, complete with an embedded, low-level diagram rendered via standard SVGs (which you can edit by opening the raw Markdown in any text editor and copying the SVG source to draw.io).
-
-***
-
 # Synaptix Architecture: A Deep Dive into Razer Hardware Control on Linux
 
 This document provides a low-level mechanical breakdown of how Synaptix translates a user action in a React interface into raw electrical signals on the USB bus to control Razer peripherals.
