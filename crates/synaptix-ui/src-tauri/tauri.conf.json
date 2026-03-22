@@ -24,7 +24,7 @@
         "depends": ["libdbus-1-3", "libusb-1.0-0", "libwebkit2gtk-4.1-0"],
         "files": {
           "/usr/bin/synaptix-daemon": "../../../target/release/synaptix-daemon",
-          "/usr/lib/systemd/system/synaptix-daemon.service": "../../../packaging/synaptix-daemon.service",
+          "/usr/lib/systemd/user/synaptix-daemon.service": "../../../packaging/synaptix-daemon.service",
           "/etc/udev/rules.d/99-synaptix.rules": "../../../packaging/99-synaptix.rules"
         },
         "postInstallScript": "../../../packaging/post_install.sh"
