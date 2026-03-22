@@ -47,7 +47,15 @@ fn detect_cobra_pro() -> (u16, RazerProductId, ConnectionType, String) {
 }
 use tray::TrayUpdate;
 
-/// Converts a `BatteryState` into a `(percentage, is_charging)` pair for the tray.
+/// Extracts the percentage from any `BatteryState` variant.
+fn state_pct(state: &BatteryState) -> u8 {
+    match state {
+        BatteryState::Charging(n) | BatteryState::Discharging(n) => *n,
+        BatteryState::Full => 100,
+    }
+}
+
+
 fn battery_to_pct(state: &BatteryState) -> (u8, bool) {
     match state {
         BatteryState::Charging(pct) => (*pct, true),
@@ -329,25 +337,60 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             };
 
             if let Some(fresh_state) = fresh_state_opt {
-                let state_json = serde_json::to_string(&fresh_state)
-                    .unwrap_or_else(|_| "\"Discharging\"".to_string());
-                if let Ok(bat_iface_ref) = conn_watch
-                    .object_server()
-                    .interface::<_, DeviceManager>("/org/synaptix/Daemon")
-                    .await
-                {
-                    {
-                        let mut iface = bat_iface_ref.get_mut().await;
-                        iface.update_battery("cobra-pro", fresh_state.clone());
+                // Sanity check: if the new reading is 0% but the DeviceManager
+                // holds a valid (> 5%) last known level, it's a bad USB read —
+                // discard it. A real battery cannot drop from 75% to 0% instantly.
+                let should_emit = {
+                    let new_pct = state_pct(&fresh_state);
+                    if new_pct == 0 {
+                        if let Ok(bat_ref) = conn_watch
+                            .object_server()
+                            .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                            .await
+                        {
+                            let iface = bat_ref.get().await;
+                            let last_pct = iface
+                                .devices
+                                .get("cobra-pro")
+                                .map(|d| state_pct(&d.battery_state))
+                                .unwrap_or(0);
+                            if last_pct > 5 {
+                                log::warn!(
+                                    "[Battery] Discarding suspicious 0% post-reconnect read (last known: {last_pct}%)"
+                                );
+                                false
+                            } else {
+                                true
+                            }
+                        } else {
+                            true
+                        }
+                    } else {
+                        true
                     }
-                    DeviceManager::battery_changed(
-                        bat_iface_ref.signal_emitter(),
-                        "cobra-pro",
-                        &state_json,
-                    )
-                    .await
-                    .ok();
-                    log::info!("[Battery] Post-reconnect state: {fresh_state:?}");
+                };
+
+                if should_emit {
+                    let state_json = serde_json::to_string(&fresh_state)
+                        .unwrap_or_else(|_| "\"Discharging\"".to_string());
+                    if let Ok(bat_iface_ref) = conn_watch
+                        .object_server()
+                        .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                        .await
+                    {
+                        {
+                            let mut iface = bat_iface_ref.get_mut().await;
+                            iface.update_battery("cobra-pro", fresh_state.clone());
+                        }
+                        DeviceManager::battery_changed(
+                            bat_iface_ref.signal_emitter(),
+                            "cobra-pro",
+                            &state_json,
+                        )
+                        .await
+                        .ok();
+                        log::info!("[Battery] Post-reconnect state: {fresh_state:?}");
+                    }
                 }
             }
         }
@@ -379,6 +422,20 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                 continue;
             }
         };
+
+        // Sanity check: reject a 0% reading if the last known level was healthy
+        // (> 5%). When the USB cable is plugged in alongside the dongle, the Cobra
+        // Pro stops responding to dongle battery queries and returns 0. A real
+        // battery cannot drain from > 5% to 0% between two consecutive 60-second
+        // polls; any such reading is a bad USB transfer — skip it entirely.
+        let last_pct = last_emitted.as_ref().map(state_pct).unwrap_or(0);
+        let new_pct = state_pct(&new_state);
+        if new_pct == 0 && last_pct > 5 {
+            log::warn!(
+                "[Battery] Discarding suspicious 0% reading (last known: {last_pct}%) — bad USB read."
+            );
+            continue;
+        }
 
         // Always push to tray so the icon stays current.
         let (pct, charging) = battery_to_pct(&new_state);
