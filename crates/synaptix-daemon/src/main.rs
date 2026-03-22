@@ -6,15 +6,14 @@ mod usb_backend;
 
 use device_manager::DeviceManager;
 use synaptix_protocol::{
-    registry::get_device_profile,
-    BatteryState, ConnectionType, RazerDevice, RazerProductId,
+    registry::get_device_profile, BatteryState, ConnectionType, RazerDevice, RazerProductId,
 };
 
 // PIDs for the Cobra Pro, dongle-first: when both are plugged in the dongle
 // is the active gaming connection and the cable is just charging.
 const COBRA_PRO_PIDS: &[(u16, ConnectionType)] = &[
-    (0x00B0, ConnectionType::Dongle),  // HyperSpeed dongle (preferred)
-    (0x00AF, ConnectionType::Wired),   // USB cable (charging / wired-only mode)
+    (0x00B0, ConnectionType::Dongle), // HyperSpeed dongle (preferred)
+    (0x00AF, ConnectionType::Wired),  // USB cable (charging / wired-only mode)
 ];
 
 /// Probe USB for the first Cobra Pro PID that is currently attached and
@@ -55,7 +54,6 @@ fn state_pct(state: &BatteryState) -> u8 {
     }
 }
 
-
 fn battery_to_pct(state: &BatteryState) -> (u8, bool) {
     match state {
         BatteryState::Charging(pct) => (*pct, true),
@@ -76,13 +74,27 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     let (initial_pid, initial_product_id, initial_conn, initial_name) =
         tokio::task::spawn_blocking(detect_cobra_pro)
             .await
-            .unwrap_or_else(|_| (0x00B0, RazerProductId::CobraProWireless, ConnectionType::Bluetooth, "Razer Cobra Pro".to_string()));
+            .unwrap_or_else(|_| {
+                (
+                    0x00B0,
+                    RazerProductId::CobraProWireless,
+                    ConnectionType::Bluetooth,
+                    "Razer Cobra Pro".to_string(),
+                )
+            });
 
-    log::info!("[Detect] Cobra Pro on USB: PID=0x{initial_pid:04X} connection={}", initial_conn.label());
+    log::info!(
+        "[Detect] Cobra Pro on USB: PID=0x{initial_pid:04X} connection={}",
+        initial_conn.label()
+    );
 
     // Shared state: the watch task owns mutation; the battery loop reads it.
     let shared: std::sync::Arc<tokio::sync::Mutex<(u16, String, ConnectionType)>> =
-        std::sync::Arc::new(tokio::sync::Mutex::new((initial_pid, initial_name.clone(), initial_conn.clone())));
+        std::sync::Arc::new(tokio::sync::Mutex::new((
+            initial_pid,
+            initial_name.clone(),
+            initial_conn.clone(),
+        )));
 
     let cobra_pid = initial_pid;
     let cobra_name = initial_name.clone();
@@ -111,7 +123,9 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                         log::warn!("[Battery] Startup query failed after 3 attempts — defaulting to unknown.");
                         break BatteryState::Discharging(0);
                     }
-                    log::warn!("[Battery] Startup query attempt {attempt} failed, retrying in 500ms…");
+                    log::warn!(
+                        "[Battery] Startup query attempt {attempt} failed, retrying in 500ms…"
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
             }
@@ -177,11 +191,22 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         // Reconstruct from initial detection for the watch loop's bookkeeping.
         let (_, _, c, _) = tokio::task::spawn_blocking(detect_cobra_pro)
             .await
-            .unwrap_or_else(|_| (initial_pid, RazerProductId::CobraProWireless, ConnectionType::Bluetooth, initial_name.clone()));
+            .unwrap_or_else(|_| {
+                (
+                    initial_pid,
+                    RazerProductId::CobraProWireless,
+                    ConnectionType::Bluetooth,
+                    initial_name.clone(),
+                )
+            });
         c
     };
     let mut watch_product_id = {
-        if initial_pid == 0x00AF { RazerProductId::CobraProWired } else { RazerProductId::CobraProWireless }
+        if initial_pid == 0x00AF {
+            RazerProductId::CobraProWired
+        } else {
+            RazerProductId::CobraProWireless
+        }
     };
 
     // Track cable presence separately: when dongle+cable are both connected,
@@ -214,7 +239,13 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                 })
                 .await
                 .unwrap_or_else(|_| {
-                    (watch_pid, watch_product_id.clone(), watch_conn.clone(), String::new(), watch_cable_present)
+                    (
+                        watch_pid,
+                        watch_product_id.clone(),
+                        watch_conn.clone(),
+                        String::new(),
+                        watch_cable_present,
+                    )
                 });
 
             let conn_changed = new_pid != watch_pid || new_conn != watch_conn;
@@ -270,7 +301,11 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                     new_conn.label()
                 );
             } else {
-                log::info!("[Detect] Cable {} while {}", if new_cable { "plugged in" } else { "unplugged" }, new_conn.label());
+                log::info!(
+                    "[Detect] Cable {} while {}",
+                    if new_cable { "plugged in" } else { "unplugged" },
+                    new_conn.label()
+                );
             }
 
             // Immediately update battery after any connection or cable change.
@@ -287,7 +322,12 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                     for attempt in 1..=3u8 {
                         let pid_c = new_pid;
                         let result = tokio::task::spawn_blocking(move || {
-                            usb_backend::query_battery(pid_c, txn_id, wait_us, &ConnectionType::Wired)
+                            usb_backend::query_battery(
+                                pid_c,
+                                txn_id,
+                                wait_us,
+                                &ConnectionType::Wired,
+                            )
                         })
                         .await
                         .ok()

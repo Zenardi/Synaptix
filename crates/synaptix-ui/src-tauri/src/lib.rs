@@ -194,7 +194,14 @@ async fn listen_for_battery_signals(
             let device_id = args.device_id().to_string();
             let new_state_json = args.new_state_json().to_string();
             if let Ok(battery_state) = serde_json::from_str::<BatteryState>(&new_state_json) {
-                app.emit("device-battery-updated", BatteryUpdatePayload { device_id, battery_state }).ok();
+                app.emit(
+                    "device-battery-updated",
+                    BatteryUpdatePayload {
+                        device_id,
+                        battery_state,
+                    },
+                )
+                .ok();
             }
         }
     }
@@ -239,7 +246,10 @@ async fn listen_for_connection_signals(
             {
                 app.emit(
                     "device-connection-changed",
-                    ConnectionUpdatePayload { device_id, connection_type },
+                    ConnectionUpdatePayload {
+                        device_id,
+                        connection_type,
+                    },
                 )
                 .ok();
             }

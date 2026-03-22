@@ -202,7 +202,9 @@ pub fn query_battery(
                         .and_then(|h| query_level(&h, transaction_id, &sleep, timeout))
                     {
                         Ok(wired_pct) if wired_pct > 0 => {
-                            println!("[Battery] Wired interface returned {wired_pct}% — using this.");
+                            println!(
+                                "[Battery] Wired interface returned {wired_pct}% — using this."
+                            );
                             wired_pct
                         }
                         _ => dongle_pct,
@@ -278,7 +280,11 @@ fn query_charging_status(
             .read_control(0xA1, 0x01, 0x0300, 0x00, &mut charging_response, timeout)
             .inspect_err(|e| eprintln!("[Battery] GET_REPORT (charging) failed: {e:?}"))?;
 
-        match validate_response(&charging_response, CMD_CLASS_BATTERY, CMD_ID_CHARGING_STATUS) {
+        match validate_response(
+            &charging_response,
+            CMD_CLASS_BATTERY,
+            CMD_ID_CHARGING_STATUS,
+        ) {
             Ok(()) => {
                 let is_charging = charging_response[9] != 0;
                 println!("[Battery] Charging status: {is_charging} (attempt {attempt})");
