@@ -2,7 +2,7 @@
 
 # Synaptix
 
-![icon](./imgs/app-icon.png)
+<img src="./imgs/app-icon.png" width="200" alt="Synaptix Logo">
 
 **A modern, open-source replacement for Razer Synapse on Linux.**
 
