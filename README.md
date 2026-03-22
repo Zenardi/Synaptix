@@ -17,7 +17,8 @@ Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https:
 
 ## ⚠️ Project Status
 
-> [!WARNING] This project is under active development and is not yet production-ready.
+> [!WARNING] 
+> This project is under active development and is not yet production-ready.
 >
 > Hardware communication is implemented via raw USB and has only been tested on the devices listed below. Unexpected behaviour — including potential firmware interaction issues — may occur on untested hardware. **Use at your own risk**, especially when running the daemon with elevated USB permissions.
 >
