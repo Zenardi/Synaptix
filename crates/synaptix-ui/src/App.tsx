@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import Titlebar from "./Titlebar";
 import DeviceCard from "./components/DeviceCard";
 
 // Mirror of the Rust BatteryState enum after serde serialisation.
@@ -68,7 +69,9 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[#111111] text-white select-none">
-      <div className="p-8">
+      <Titlebar />
+      {/* pt-9 offsets the fixed 36px titlebar */}
+      <div className="pt-9 p-8">
         {/* Header */}
         <h1 className="text-2xl font-bold mb-1 tracking-widest uppercase text-razer-green">
           Synaptix

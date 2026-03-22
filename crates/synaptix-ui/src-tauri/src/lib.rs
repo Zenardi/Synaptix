@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use synaptix_protocol::BatteryState;
+use synaptix_protocol::{BatteryState, LightingEffect};
 use tauri::{AppHandle, Emitter};
 
 /// Proxy for the `org.synaptix.Daemon` D-Bus interface.
@@ -11,6 +11,8 @@ use tauri::{AppHandle, Emitter};
 )]
 trait SynaptixDaemon {
     fn get_devices(&self) -> zbus::Result<Vec<String>>;
+
+    fn set_lighting(&self, device_id: &str, effect_json: &str) -> zbus::Result<bool>;
 
     /// Signal emitted by the daemon whenever a device's battery state changes.
     #[zbus(signal)]
@@ -55,6 +57,24 @@ async fn get_razer_devices() -> Result<Vec<DeviceEntry>, String> {
     Ok(entries)
 }
 
+/// Tauri IPC command: applies a lighting effect to a device via the daemon.
+#[tauri::command]
+async fn set_device_lighting(device_id: String, effect: LightingEffect) -> Result<bool, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let proxy = SynaptixDaemonProxy::new(&conn)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let effect_json = serde_json::to_string(&effect).map_err(|e| e.to_string())?;
+    proxy
+        .set_lighting(&device_id, &effect_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Background task: subscribes to the daemon's `BatteryChanged` D-Bus signal
 /// and forwards each event to the React frontend via Tauri's event system.
 async fn listen_for_signals(
@@ -96,7 +116,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_razer_devices])
+        .invoke_handler(tauri::generate_handler![get_razer_devices, set_device_lighting])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

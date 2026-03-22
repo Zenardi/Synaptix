@@ -18,6 +18,17 @@ pub enum RazerProductId {
     Unknown(u16),
 }
 
+/// A lighting effect to apply to a device's RGB zones.
+///
+/// Serialises as a serde adjacently-tagged enum so the wire format matches
+/// what the React frontend sends:  `{ "Static": [r, g, b] }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LightingEffect {
+    /// All LEDs set to a single static RGB colour.
+    Static([u8; 3]),
+    // Future variants: Wave, Breathing, Spectrum, ReactiveStrike, …
+}
+
 /// The battery / charging state reported by `razer.device.power`.
 ///
 /// `Charging(u8)` and `Discharging(u8)` carry the current charge level (0–100).

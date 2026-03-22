@@ -3,6 +3,9 @@
   "description": "Default capabilities for Synaptix",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-close"
   ]
 }

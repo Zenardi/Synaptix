@@ -1,17 +1,19 @@
 use std::collections::HashMap;
 #[cfg(not(test))]
-use synaptix_protocol::{BatteryState, RazerDevice};
+use synaptix_protocol::{BatteryState, LightingEffect, RazerDevice};
 #[cfg(test)]
-use synaptix_protocol::{BatteryState, RazerDevice, RazerProductId};
+use synaptix_protocol::{BatteryState, LightingEffect, RazerDevice, RazerProductId};
 
 pub struct DeviceManager {
     devices: HashMap<String, RazerDevice>,
+    lighting: HashMap<String, LightingEffect>,
 }
 
 impl DeviceManager {
     pub fn new() -> Self {
         Self {
             devices: HashMap::new(),
+            lighting: HashMap::new(),
         }
     }
 
@@ -19,10 +21,12 @@ impl DeviceManager {
         self.devices.insert(id, device);
     }
 
+    #[allow(dead_code)]
     pub fn get_device(&self, id: &str) -> Option<&RazerDevice> {
         self.devices.get(id)
     }
 
+    #[allow(dead_code)]
     pub fn get_all_devices(&self) -> Vec<&RazerDevice> {
         self.devices.values().collect()
     }
@@ -30,6 +34,13 @@ impl DeviceManager {
     pub fn update_battery(&mut self, id: &str, state: BatteryState) {
         if let Some(device) = self.devices.get_mut(id) {
             device.battery_state = state;
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn update_lighting(&mut self, id: &str, effect: LightingEffect) {
+        if self.devices.contains_key(id) {
+            self.lighting.insert(id.to_string(), effect);
         }
     }
 }
@@ -53,6 +64,19 @@ impl DeviceManager {
                 Some(value.to_string())
             })
             .collect()
+    }
+
+    /// Sets the lighting effect for a device.
+    /// `effect_json` is the serde-JSON serialisation of `LightingEffect`.
+    fn set_lighting(&mut self, device_id: String, effect_json: String) -> bool {
+        let Ok(effect) = serde_json::from_str::<LightingEffect>(&effect_json) else {
+            return false;
+        };
+        let existed = self.devices.contains_key(&device_id);
+        if existed {
+            self.lighting.insert(device_id, effect);
+        }
+        existed
     }
 
     /// Emitted whenever a device's battery state changes.
