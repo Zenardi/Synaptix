@@ -416,6 +416,94 @@ Use the structured GitHub Issue templates to ensure reports have the hardware da
 - 🐛 **[Report a Bug](.github/ISSUE_TEMPLATE/REPORT_BUG.md)** — D-Bus failures, USB errors, incorrect hardware behaviour. Include your daemon logs (`journalctl --user -u synaptix-daemon -n 50`).
 - ✨ **[Request a Feature](.github/ISSUE_TEMPLATE/REQUEST_FEATURE.md)** — New lighting effects, DPI profiles, device support. Include the target PID and the relevant OpenRazer Python file path.
 
+### Local Development Setup
+
+Before you can build and run Synaptix locally, install the following prerequisites.
+
+#### 1. System packages (Ubuntu / Debian / Pop!\_OS)
+
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  build-essential curl wget file \
+  libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev \
+  libgtk-3-dev \
+  libdbus-1-dev \
+  libudev-dev \
+  libssl-dev \
+  libxdo-dev \
+  librsvg2-dev
+```
+
+| Package | Required by |
+|---|---|
+| `libwebkit2gtk-4.1-dev` | Tauri WebView runtime |
+| `libayatana-appindicator3-dev` | System tray AppIndicator (daemon) |
+| `libgtk-3-dev` | GTK main loop used by `tray-icon` |
+| `libdbus-1-dev` | `zbus` D-Bus bindings |
+| `libudev-dev` | `rusb` USB device enumeration |
+| `libssl-dev` | TLS in Tauri updater |
+| `libxdo-dev` | Tauri window management on X11 |
+| `librsvg2-dev` | SVG icon rendering in Tauri |
+
+#### 2. Rust toolchain
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup toolchain install stable
+rustup component add rustfmt clippy
+```
+
+Minimum supported: **Rust stable** (same as CI).
+
+#### 3. Node.js 22
+
+```bash
+# via nvm (recommended)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+nvm install 22 && nvm use 22
+```
+
+Or download directly from [nodejs.org](https://nodejs.org).
+
+#### 4. Clone and bootstrap
+
+```bash
+git clone https://github.com/Zenardi/Synaptix.git
+cd Synaptix
+cd crates/synaptix-ui && npm ci && cd ../..
+```
+
+#### 5. Run the full check suite locally
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace
+cd crates/synaptix-ui && npm test
+```
+
+#### 6. Run in development
+
+```bash
+# Daemon (terminal 1)
+cargo run -p synaptix-daemon
+
+# UI dev server (terminal 2)
+cd crates/synaptix-ui && npm run tauri dev
+```
+
+> **USB permissions:** Add yourself to the `plugdev` group so the daemon can open USB endpoints without `sudo`:
+> ```bash
+> sudo usermod -aG plugdev $USER
+> echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="1532", MODE="0664", GROUP="plugdev"' \
+>   | sudo tee /etc/udev/rules.d/99-razer.rules
+> sudo udevadm control --reload-rules && sudo udevadm trigger
+> # Log out and back in for the group change to take effect
+> ```
+
+---
+
 ### Workflow
 
 1. **Fork** the repository and create a feature branch: `git checkout -b feat/my-feature`.
