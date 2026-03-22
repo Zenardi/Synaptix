@@ -39,6 +39,17 @@ pub enum LightingEffect {
     Spectrum,
 }
 
+/// A sensor (optical / laser) configuration command for a mouse.
+///
+/// Wire format (serde defaults):
+///   SetDpi: `{ "SetDpi": { "x": 800, "y": 800 } }`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SensorCommand {
+    /// Set the X and Y DPI independently.
+    /// Valid range: 100–45 000 (device-specific maximum applies at the hardware level).
+    SetDpi { x: u16, y: u16 },
+}
+
 /// The battery / charging state reported by `razer.device.power`.
 ///
 /// `Charging(u8)` and `Discharging(u8)` carry the current charge level (0–100).

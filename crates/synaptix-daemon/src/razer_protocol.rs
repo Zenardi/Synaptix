@@ -122,6 +122,49 @@ pub fn parse_battery_response(response: &[u8; REPORT_LEN]) -> u8 {
     ((raw as u16 * 100) / 255) as u8
 }
 
+// ── Sensor / DPI control ──────────────────────────────────────────────────────
+
+/// Command class for sensor / DPI configuration.
+/// Source: `razer_chroma_misc_set_dpi_xy` in `razerchromacommon.c`.
+pub const CMD_CLASS_SENSOR: u8 = 0x04;
+
+/// Command ID: set X/Y DPI independently.
+pub const CMD_ID_SET_DPI: u8 = 0x05;
+
+/// Builds a 90-byte Razer HID report that sets the mouse DPI for both axes.
+///
+/// DPI values are encoded as Big-Endian 16-bit pairs in the `arguments[]`
+/// section of the report (source: `razer_chroma_misc_set_dpi_xy`):
+///
+/// ```text
+/// Byte  1     transaction_id            (device-specific)
+/// Byte  5     data_size      = 0x07     (7 argument bytes)
+/// Byte  6     command_class  = 0x04
+/// Byte  7     command_id     = 0x05
+/// Byte  8     args[0]        = VARSTORE (0x01)
+/// Byte  9     args[1]        = dpi_x >> 8          (high byte)
+/// Byte 10     args[2]        = dpi_x & 0xFF         (low byte)
+/// Byte 11     args[3]        = dpi_y >> 8          (high byte)
+/// Byte 12     args[4]        = dpi_y & 0xFF         (low byte)
+/// Byte 88     crc            = XOR(bytes[2..88])
+/// ```
+///
+/// Example — 800 DPI: `800 = 0x0320`  → high = `0x03`, low = `0x20`.
+pub fn build_set_dpi_payload(transaction_id: u8, dpi_x: u16, dpi_y: u16) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = transaction_id;
+    buf[5] = 0x07; // data_size
+    buf[6] = CMD_CLASS_SENSOR;
+    buf[7] = CMD_ID_SET_DPI;
+    buf[8] = VARSTORE;
+    buf[9] = (dpi_x >> 8) as u8;
+    buf[10] = (dpi_x & 0xFF) as u8;
+    buf[11] = (dpi_y >> 8) as u8;
+    buf[12] = (dpi_y & 0xFF) as u8;
+    calculate_razer_checksum(&mut buf);
+    buf
+}
+
 // ── Battery / Power queries ───────────────────────────────────────────────────
 
 /// Command class for battery and power management queries.
@@ -450,5 +493,52 @@ mod tests {
         // ── Parse: 191 raw → 74 % (191*100/255 = 74) ─────────────────────
         response[9] = 191;
         assert_eq!(parse_battery_response(&response), 74);
+    }
+
+    // ── DPI payload tests ─────────────────────────────────────────────────────
+
+    /// 800 DPI on both axes for Cobra Pro (txn_id = 0x1F).
+    ///
+    /// 800 = 0x0320  →  high = 0x03, low = 0x20
+    ///
+    /// Non-zero bytes in [2..88]:
+    ///   [5]=0x07, [6]=0x04, [7]=0x05, [8]=0x01(VARSTORE),
+    ///   [9]=0x03, [10]=0x20, [11]=0x03, [12]=0x20
+    ///
+    /// CRC = 0x07 ^ 0x04 ^ 0x05 ^ 0x01 ^ 0x03 ^ 0x20 ^ 0x03 ^ 0x20 = 0x07
+    #[test]
+    fn test_set_dpi_payload_800_800() {
+        let payload = build_set_dpi_payload(TRANSACTION_ID_COBRA, 800, 800);
+
+        assert_eq!(payload[0], 0x00, "status must be 0x00");
+        assert_eq!(payload[1], TRANSACTION_ID_COBRA, "transaction_id mismatch");
+        assert_eq!(payload[5], 0x07, "data_size must be 7");
+        assert_eq!(payload[6], CMD_CLASS_SENSOR, "command_class must be 0x04");
+        assert_eq!(payload[7], CMD_ID_SET_DPI, "command_id must be 0x05");
+        assert_eq!(payload[8], VARSTORE, "args[0] must be VARSTORE");
+        // dpi_x = 800 = 0x0320
+        assert_eq!(payload[9], 0x03, "dpi_x high byte mismatch");
+        assert_eq!(payload[10], 0x20, "dpi_x low byte mismatch");
+        // dpi_y = 800 = 0x0320
+        assert_eq!(payload[11], 0x03, "dpi_y high byte mismatch");
+        assert_eq!(payload[12], 0x20, "dpi_y low byte mismatch");
+        assert_eq!(payload[88], 0x07, "CRC mismatch");
+        assert_eq!(payload[89], 0x00, "reserved byte must be 0x00");
+    }
+
+    /// Asymmetric DPI: X=1600 (0x0640), Y=400 (0x0190) for DA V2 Pro.
+    ///
+    /// CRC = 0x07 ^ 0x04 ^ 0x05 ^ 0x01 ^ 0x06 ^ 0x40 ^ 0x01 ^ 0x90 = 0xD4
+    #[test]
+    fn test_set_dpi_payload_asymmetric() {
+        let payload = build_set_dpi_payload(TRANSACTION_ID_DA, 1600, 400);
+
+        // 1600 = 0x0640
+        assert_eq!(payload[9], 0x06, "dpi_x high (1600)");
+        assert_eq!(payload[10], 0x40, "dpi_x low (1600)");
+        // 400 = 0x0190
+        assert_eq!(payload[11], 0x01, "dpi_y high (400)");
+        assert_eq!(payload[12], 0x90, "dpi_y low (400)");
+        assert_eq!(payload[88], 0xD0, "CRC mismatch for asymmetric DPI");
     }
 }

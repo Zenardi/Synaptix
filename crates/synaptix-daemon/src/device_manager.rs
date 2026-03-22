@@ -149,6 +149,40 @@ impl DeviceManager {
         true
     }
 
+    /// Sets the DPI for a mouse device and dispatches the raw USB payload.
+    ///
+    /// `device_id` must match a registered device. `x` and `y` are the DPI
+    /// values for each axis (valid range: 100–45 000; enforced by hardware).
+    ///
+    /// Returns `true` if the device exists and the command was dispatched,
+    /// `false` if the device ID is unknown.
+    async fn set_dpi(&mut self, device_id: String, x: u16, y: u16) -> bool {
+        println!("[SetDpi] device={device_id} x={x} y={y}");
+
+        let Some(device) = self.devices.get(&device_id) else {
+            eprintln!("[SetDpi] Unknown device ID: {device_id}");
+            return false;
+        };
+
+        let product_id = device.product_id.usb_pid();
+        let (txn_id, _) = lighting_params(&device.product_id);
+        println!("[SetDpi] PID=0x{product_id:04X} txn_id=0x{txn_id:02X}");
+
+        let result = tokio::task::spawn_blocking(move || {
+            let payload = crate::razer_protocol::build_set_dpi_payload(txn_id, x, y);
+            crate::usb_backend::send_control_transfer(product_id, &payload)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => println!("[SetDpi] USB transfer succeeded for {device_id}"),
+            Ok(Err(e)) => eprintln!("[SetDpi] USB transfer failed: {e:?}"),
+            Err(e) => eprintln!("[SetDpi] spawn_blocking panicked: {e:?}"),
+        }
+
+        true
+    }
+
     /// Emitted whenever a device's battery state changes.
     /// `new_state_json` is the serde-JSON serialisation of `BatteryState`.
     #[zbus(signal)]
