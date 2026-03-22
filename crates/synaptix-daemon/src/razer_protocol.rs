@@ -14,6 +14,10 @@ pub const CMD_ID: u8 = 0x02;
 pub const VARSTORE: u8 = 0x01;
 /// Static solid-colour effect ID.
 pub const EFFECT_STATIC: u8 = 0x01;
+/// Single-colour breathing effect ID.
+pub const EFFECT_BREATHING_SINGLE: u8 = 0x02;
+/// Auto spectrum-cycling effect ID.
+pub const EFFECT_SPECTRUM: u8 = 0x04;
 
 // ── Per-device transaction IDs ────────────────────────────────────────────────
 
@@ -144,6 +148,65 @@ pub fn build_charging_query_payload(transaction_id: u8) -> [u8; REPORT_LEN] {
     buf[5] = 0x02; // data_size
     buf[6] = CMD_CLASS_BATTERY;
     buf[7] = CMD_ID_CHARGING_STATUS;
+    calculate_razer_checksum(&mut buf);
+    buf
+}
+
+// ── Lighting effect builders ──────────────────────────────────────────────────
+
+/// Builds a 90-byte Razer HID report for the single-colour Breathing effect.
+///
+/// Same header layout as `build_static_color_payload` but with effect byte
+/// `0x02` (`EFFECT_BREATHING_SINGLE`) instead of `0x01`.
+///
+/// ```text
+/// Byte  8  args[0] = VARSTORE (0x01)
+/// Byte  9  args[1] = led_id
+/// Byte 10  args[2] = 0x02  BREATHING_SINGLE
+/// Byte 13  args[5] = 0x01  colour count
+/// Bytes 14-16       r, g, b
+/// ```
+pub fn build_breathing_payload(
+    transaction_id: u8,
+    led_id: u8,
+    r: u8,
+    g: u8,
+    b: u8,
+) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = transaction_id;
+    buf[5] = 0x09;
+    buf[6] = CMD_CLASS;
+    buf[7] = CMD_ID;
+    buf[8] = VARSTORE;
+    buf[9] = led_id;
+    buf[10] = EFFECT_BREATHING_SINGLE;
+    buf[13] = 0x01;
+    buf[14] = r;
+    buf[15] = g;
+    buf[16] = b;
+    calculate_razer_checksum(&mut buf);
+    buf
+}
+
+/// Builds a 90-byte Razer HID report for the Spectrum (auto colour-cycle) effect.
+///
+/// Spectrum carries no colour data; data_size is `0x03` (VARSTORE + led_id + effect).
+///
+/// ```text
+/// Byte  8  args[0] = VARSTORE (0x01)
+/// Byte  9  args[1] = led_id
+/// Byte 10  args[2] = 0x04  SPECTRUM
+/// ```
+pub fn build_spectrum_payload(transaction_id: u8, led_id: u8) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = transaction_id;
+    buf[5] = 0x03;
+    buf[6] = CMD_CLASS;
+    buf[7] = CMD_ID;
+    buf[8] = VARSTORE;
+    buf[9] = led_id;
+    buf[10] = EFFECT_SPECTRUM;
     calculate_razer_checksum(&mut buf);
     buf
 }
@@ -300,5 +363,50 @@ mod tests {
 
         let got = build_kraken_v4_static_payload(0xFF, 0x00, 0x00);
         assert_eq!(got, expected, "Kraken V4 Pro red payload mismatch");
+    }
+
+    // ── Breathing effect tests ────────────────────────────────────────────────
+
+    /// Breathing Single, Cobra Pro params (txn=0x1F, led=0x00), Red (0xFF,0,0).
+    /// Non-zero bytes [2..88]: [5]=0x09, [6]=0x0F, [7]=0x02, [8]=0x01,
+    ///   [9]=0x00(LED_ZERO), [10]=0x02, [13]=0x01(count), [14]=0xFF(R)
+    /// CRC = 0x09^0x0F^0x02^0x01^0x02^0x01^0xFF = 0xF9
+    #[test]
+    fn test_breathing_payload_cobra_pro_red() {
+        let payload = build_breathing_payload(TRANSACTION_ID_COBRA, LED_ZERO, 0xFF, 0x00, 0x00);
+        assert_eq!(payload[1], TRANSACTION_ID_COBRA, "transaction_id mismatch");
+        assert_eq!(payload[5], 0x09, "data_size must be 9");
+        assert_eq!(payload[6], CMD_CLASS);
+        assert_eq!(payload[7], CMD_ID);
+        assert_eq!(payload[8], VARSTORE);
+        assert_eq!(payload[9], LED_ZERO);
+        assert_eq!(payload[10], EFFECT_BREATHING_SINGLE);
+        assert_eq!(payload[13], 0x01, "colour count must be 1");
+        assert_eq!(payload[14], 0xFF, "R mismatch");
+        assert_eq!(payload[15], 0x00, "G mismatch");
+        assert_eq!(payload[16], 0x00, "B mismatch");
+        assert_eq!(payload[88], 0xF9, "CRC mismatch");
+    }
+
+    // ── Spectrum effect tests ─────────────────────────────────────────────────
+
+    /// Spectrum, Cobra Pro params (txn=0x1F, led=0x00).
+    /// Non-zero bytes [2..88]: [5]=0x03, [6]=0x0F, [7]=0x02, [8]=0x01, [10]=0x04
+    /// CRC = 0x03^0x0F^0x02^0x01^0x04 = 0x0B
+    #[test]
+    fn test_spectrum_payload_cobra_pro() {
+        let payload = build_spectrum_payload(TRANSACTION_ID_COBRA, LED_ZERO);
+        assert_eq!(payload[1], TRANSACTION_ID_COBRA, "transaction_id mismatch");
+        assert_eq!(payload[5], 0x03, "data_size must be 3");
+        assert_eq!(payload[6], CMD_CLASS);
+        assert_eq!(payload[7], CMD_ID);
+        assert_eq!(payload[8], VARSTORE);
+        assert_eq!(payload[9], LED_ZERO);
+        assert_eq!(payload[10], EFFECT_SPECTRUM);
+        // RGB bytes must be zero — spectrum carries no colour data
+        assert_eq!(payload[14], 0x00);
+        assert_eq!(payload[15], 0x00);
+        assert_eq!(payload[16], 0x00);
+        assert_eq!(payload[88], 0x0B, "CRC mismatch");
     }
 }

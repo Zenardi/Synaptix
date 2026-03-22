@@ -108,15 +108,33 @@ impl DeviceManager {
 
         self.lighting.insert(device_id.clone(), effect.clone());
 
-        let LightingEffect::Static([r, g, b]) = effect;
-        println!("[SetLighting] Dispatching Static({r}, {g}, {b}) to USB backend …");
+        println!("[SetLighting] Dispatching {effect:?} to USB backend …");
 
         // Await the blocking task so errors are never swallowed.
         let result = tokio::task::spawn_blocking(move || {
-            let payload = if is_kraken_v4 {
-                crate::razer_protocol::build_kraken_v4_static_payload(r, g, b)
-            } else {
-                crate::razer_protocol::build_static_color_payload(txn_id, led_id, r, g, b)
+            let payload = match effect {
+                LightingEffect::Static([r, g, b]) => {
+                    if is_kraken_v4 {
+                        crate::razer_protocol::build_kraken_v4_static_payload(r, g, b)
+                    } else {
+                        crate::razer_protocol::build_static_color_payload(txn_id, led_id, r, g, b)
+                    }
+                }
+                LightingEffect::Breathing([r, g, b]) => {
+                    if is_kraken_v4 {
+                        // Breathing protocol for Kraken V4 Pro is not yet reverse-engineered.
+                        eprintln!("[SetLighting] Breathing not yet supported for Kraken V4 Pro");
+                        return Err(rusb::Error::NotSupported);
+                    }
+                    crate::razer_protocol::build_breathing_payload(txn_id, led_id, r, g, b)
+                }
+                LightingEffect::Spectrum => {
+                    if is_kraken_v4 {
+                        eprintln!("[SetLighting] Spectrum not yet supported for Kraken V4 Pro");
+                        return Err(rusb::Error::NotSupported);
+                    }
+                    crate::razer_protocol::build_spectrum_payload(txn_id, led_id)
+                }
             };
             crate::usb_backend::send_control_transfer(product_id, &payload)
         })
