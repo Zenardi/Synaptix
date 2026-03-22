@@ -18,6 +18,14 @@ pub enum DeviceCapability {
     BatteryReporting,
     /// Device supports DPI (sensor resolution) configuration via USB.
     DpiControl,
+    /// Device supports sidetone volume control (headsets).
+    Sidetone,
+    /// Device has a microphone that supports mute toggle.
+    Microphone,
+    /// Device supports haptic feedback enable/intensity (headsets).
+    HapticFeedback,
+    /// Device supports THX Spatial Audio toggle.
+    ThxSpatialAudio,
 }
 
 /// Static profile for a known Razer device sourced from the USB PID registry.
@@ -996,6 +1004,16 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
     }
     if has_dpi {
         capabilities.push(DeviceCapability::DpiControl);
+    }
+    // Headset capabilities — Sidetone + Microphone for all Kraken audio devices.
+    if matches!(device_type, DeviceType::Audio) {
+        capabilities.push(DeviceCapability::Sidetone);
+        capabilities.push(DeviceCapability::Microphone);
+    }
+    // Kraken V4 Pro is the flagship with haptics and THX Spatial Audio.
+    if product_id == 0x0568 {
+        capabilities.push(DeviceCapability::HapticFeedback);
+        capabilities.push(DeviceCapability::ThxSpatialAudio);
     }
 
     Some(DeviceProfile {

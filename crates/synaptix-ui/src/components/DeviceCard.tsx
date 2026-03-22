@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import type { RazerDevice, ConnectionType } from "../App";
@@ -69,6 +70,7 @@ interface Props {
 }
 
 export default function DeviceCard({ device }: Props) {
+  const navigate = useNavigate();
   const level = getBatteryLevel(device.battery_state);
   const charging = isCharging(device.battery_state, device.connection_type);
   const targetOffset = CIRCUMFERENCE * (1 - level / 100);
@@ -307,6 +309,14 @@ export default function DeviceCard({ device }: Props) {
       {device.capabilities.some((c) => c === "DpiControl") && (
         <DpiControl deviceId={device.device_id} />
       )}
+
+      {/* ── Configure button ─────────────────────────────────────────── */}
+      <button
+        onClick={() => navigate(`/device/${device.device_id}`)}
+        className="w-full mt-1 py-2 rounded-lg text-[11px] font-semibold tracking-widest uppercase transition-all border border-white/10 text-gray-400 hover:border-razer-green/50 hover:text-razer-green hover:bg-razer-green/5"
+      >
+        Configure →
+      </button>
     </div>
   );
 }
