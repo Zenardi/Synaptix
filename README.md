@@ -4,7 +4,7 @@
 
 **A modern, open-source replacement for Razer Synapse on Linux.**
 
-Synaptix is a Rust-powered daemon and GUI that replaces the `openrazer` + Polychromatic stack with a clean, event-driven architecture built from the ground up.
+Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https://github.com/openrazer/openrazer) + Polychromatic stack with a clean, event-driven architecture built from the ground up.
 
 [![Synaptix CI](https://github.com/Zenardi/Synaptix/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Zenardi/Synaptix/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
@@ -15,19 +15,50 @@ Synaptix is a Rust-powered daemon and GUI that replaces the `openrazer` + Polych
 
 ---
 
+## ⚠️ Project Status
+
+> [!WARNING] This project is under active development and is not yet production-ready.
+>
+> Hardware communication is implemented via raw USB and has only been tested on the devices listed below. Unexpected behaviour — including potential firmware interaction issues — may occur on untested hardware. **Use at your own risk**, especially when running the daemon with elevated USB permissions.
+>
+> Contributions, bug reports, and hardware compatibility feedback are very welcome.
+
+---
+
 ## Table of Contents
 
-- [Features](#features)
-- [Architecture](#architecture)
-- [Pre-requisites](#pre-requisites)
-- [Local Setup](#local-setup)
-- [Running in Development](#running-in-development)
-- [Running Tests](#running-tests)
-- [Building for Production](#building-for-production)
-- [Installing the Daemon](#installing-the-daemon)
-- [USB Permissions (udev)](#usb-permissions-udev)
-- [Supported Devices](#supported-devices)
-- [Contributing](#contributing)
+- [Synaptix](#synaptix)
+  - [⚠️ Project Status](#️-project-status)
+  - [Table of Contents](#table-of-contents)
+  - [Features](#features)
+  - [Architecture](#architecture)
+    - [Data flow](#data-flow)
+  - [Pre-requisites](#pre-requisites)
+    - [System packages](#system-packages)
+    - [Rust](#rust)
+    - [Node.js \& npm](#nodejs--npm)
+    - [Tauri CLI](#tauri-cli)
+  - [Local Setup](#local-setup)
+  - [Running in Development](#running-in-development)
+    - [1 — Start the daemon](#1--start-the-daemon)
+    - [2 — Start the UI](#2--start-the-ui)
+  - [Running Tests](#running-tests)
+    - [Rust (all crates)](#rust-all-crates)
+    - [React / TypeScript](#react--typescript)
+    - [Watch mode (frontend)](#watch-mode-frontend)
+  - [Building for Production](#building-for-production)
+    - [Daemon binary](#daemon-binary)
+    - [Tauri application (UI)](#tauri-application-ui)
+  - [Installing the Daemon](#installing-the-daemon)
+    - [Manual (development)](#manual-development)
+    - [systemd user service (recommended)](#systemd-user-service-recommended)
+  - [USB Permissions (udev)](#usb-permissions-udev)
+  - [Supported Devices](#supported-devices)
+    - [Adding a new device](#adding-a-new-device)
+  - [Contributing](#contributing)
+    - [Workflow](#workflow)
+    - [Code style](#code-style)
+  - [License](#license)
 
 ---
 
@@ -296,16 +327,22 @@ Verify membership with `groups`. If `plugdev` is listed, you can run the daemon 
 
 ## Supported Devices
 
-| Device | Wired PID | Wireless PID | Status |
-|---|---|---|---|
-| Razer Cobra Pro | `0x00AF` | `0x00B0` | ✅ Static RGB |
-| Razer DeathAdder V2 Pro | `0x007C` | `0x007D` | ✅ Static RGB |
+> Only devices listed below have been tested. Static RGB lighting is the only effect currently implemented.
+> If your device is not listed, the daemon will compile and run but **will not find your hardware** until its Product ID and protocol parameters are added.
 
-Adding a new device requires:
+| Device | Wired PID | Wireless PID | Static RGB | Battery Reporting |
+|---|---|---|---|---|
+| Razer Cobra Pro | `0x00AF` | `0x00B0` | ✅ Tested | 🔄 Simulated |
+| Razer DeathAdder V2 Pro | `0x007C` | `0x007D` | ✅ Implemented | 🔄 Simulated |
 
-1. Adding its `RazerProductId` variants and `usb_pid()` mapping in `crates/synaptix-protocol/src/lib.rs`.
-2. Adding its `(transaction_id, led_id)` entry to `lighting_params()` in `crates/synaptix-daemon/src/device_manager.rs`.
-3. Seeding it in `main.rs` (or replacing the mock with a real USB enumeration loop).
+**Legend:** ✅ Tested on real hardware &nbsp;|&nbsp; 🔄 Simulated (mock loop, real USB query not yet implemented) &nbsp;|&nbsp; ❌ Not yet supported
+
+### Adding a new device
+
+1. Add its `RazerProductId` variants and `usb_pid()` mapping in `crates/synaptix-protocol/src/lib.rs`.
+2. Add its `(transaction_id, led_id)` entry to `lighting_params()` in `crates/synaptix-daemon/src/device_manager.rs`.
+3. Seed it in `main.rs` (or replace the mock with a real USB enumeration loop).
+4. Open a PR with the hardware model and PID source (e.g., a link to the OpenRazer driver header).
 
 ---
 
