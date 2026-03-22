@@ -7,7 +7,7 @@ import AudioTab from "../components/headset/AudioTab";
 import MicTab from "../components/headset/MicTab";
 import HapticsTab from "../components/headset/HapticsTab";
 import DpiControl from "../components/DpiControl";
-import DeviceCard from "../components/DeviceCard";
+import LightingControl from "../components/LightingControl";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -67,18 +67,6 @@ function BatteryRing({ device }: { device: RazerDevice }) {
           <span className="text-[8px] font-semibold uppercase tracking-wider text-razer-green">⚡</span>
         )}
       </div>
-    </div>
-  );
-}
-
-// ── Lighting tab (reuses DeviceCard's lighting UI as a standalone section) ────
-
-function LightingTab({ device }: { device: RazerDevice }) {
-  // Render DeviceCard in "lighting-only" mode by wrapping with a minimal shell.
-  // This avoids duplicating the lighting logic.
-  return (
-    <div className="max-w-sm">
-      <DeviceCard device={device} />
     </div>
   );
 }
@@ -190,7 +178,9 @@ export default function DeviceDetail() {
             {activeTab === "haptics" && (
               <HapticsTab deviceId={device.device_id} pid={String(deviceId)} />
             )}
-            {activeTab === "lighting" && <LightingTab device={device} />}
+            {activeTab === "lighting" && (
+              <LightingControl deviceId={device.device_id} />
+            )}
             {activeTab === "performance" && (
               <div className="max-w-xs">
                 <DpiControl deviceId={device.device_id} />
