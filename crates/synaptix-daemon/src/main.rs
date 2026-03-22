@@ -9,6 +9,8 @@ use synaptix_protocol::{registry::get_device_profile, BatteryState, RazerDevice,
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cobra_pid = RazerProductId::CobraProWireless.usb_pid();
     let txn_id = razer_protocol::TRANSACTION_ID_COBRA;
+    // Cobra Pro is a "new mouse receiver" — needs 31ms after SET_REPORT.
+    let wait_us = razer_protocol::WAIT_NEW_RECEIVER_US;
 
     let cobra_name = get_device_profile(cobra_pid)
         .map(|p| p.name)
@@ -17,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Query real battery state immediately on startup so the UI never shows
     // a stale placeholder value.
     let initial_battery =
-        tokio::task::spawn_blocking(move || usb_backend::query_battery(cobra_pid, txn_id))
+        tokio::task::spawn_blocking(move || usb_backend::query_battery(cobra_pid, txn_id, wait_us))
             .await
             .ok()
             .and_then(|r| r.ok())
@@ -56,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Query real battery state from hardware inside a blocking thread so
         // the async runtime is not stalled by synchronous USB I/O.
         let new_state = match tokio::task::spawn_blocking(move || {
-            usb_backend::query_battery(cobra_pid, txn_id)
+            usb_backend::query_battery(cobra_pid, txn_id, wait_us)
         })
         .await
         {

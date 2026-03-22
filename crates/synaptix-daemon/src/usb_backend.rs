@@ -89,19 +89,25 @@ pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rus
 /// Queries the physical device for its current battery level and charging status.
 ///
 /// Protocol (confirmed from `razercommon.c → razer_get_usb_response`):
-/// 1. Send battery level query via SET_REPORT (`bmRequestType=0x21`, `bRequest=0x09`)
-/// 2. Sleep ≥1 ms to allow firmware to prepare the response
+/// 1. Send query via SET_REPORT (`bmRequestType=0x21`, `bRequest=0x09`)
+/// 2. Sleep `wait_us` microseconds — firmware needs time to prepare the response.
+///    Cobra Pro / new receivers require ≥31 ms (`WAIT_NEW_RECEIVER_US`).
 /// 3. Read response via GET_REPORT (`bmRequestType=0xA1`, `bRequest=0x01`)
-/// 4. `response[9]` (arguments[1]) holds the raw 0–255 level
-/// 5. Repeat for charging status query — `response[9]` is 0 or 1
-pub fn query_battery(product_id: u16, transaction_id: u8) -> rusb::Result<BatteryState> {
+/// 4. `response[9]` (`arguments[1]`) holds the value:
+///    - battery level: raw 0–255 → scale to 0–100%
+///    - charging:      0 = discharging, 1 = charging
+pub fn query_battery(
+    product_id: u16,
+    transaction_id: u8,
+    wait_us: u64,
+) -> rusb::Result<BatteryState> {
     println!(
-        "[Battery] Querying battery for PID 0x{product_id:04x}, txn_id=0x{transaction_id:02x}"
+        "[Battery] Querying battery for PID 0x{product_id:04x}, txn_id=0x{transaction_id:02x}, wait={wait_us}µs"
     );
 
     let handle = open_razer_device(product_id)?;
     let timeout = std::time::Duration::from_millis(500);
-    let sleep_ms = std::time::Duration::from_millis(1);
+    let sleep = std::time::Duration::from_micros(wait_us);
 
     // ── Battery level ─────────────────────────────────────────────────────────
     let level_query = build_battery_query_payload(transaction_id);
@@ -110,15 +116,14 @@ pub fn query_battery(product_id: u16, transaction_id: u8) -> rusb::Result<Batter
         .write_control(0x21, 0x09, 0x0300, 0x00, &level_query, timeout)
         .inspect_err(|e| eprintln!("[Battery] SET_REPORT (level) failed: {e:?}"))?;
 
-    std::thread::sleep(sleep_ms);
+    std::thread::sleep(sleep);
 
     let mut level_response = [0u8; REPORT_LEN];
     handle
         .read_control(0xA1, 0x01, 0x0300, 0x00, &mut level_response, timeout)
         .inspect_err(|e| eprintln!("[Battery] GET_REPORT (level) failed: {e:?}"))?;
 
-    // arguments[1] is at byte index 9 (status[0] + txn_id[1] + remaining[2-3] +
-    // protocol[4] + data_size[5] + cmd_class[6] + cmd_id[7] + args[0][8] + args[1][9])
+    // arguments[1] is at byte index 9 (see razercommon.h struct razer_report layout)
     let raw_level = level_response[9];
     let percent = ((raw_level as u16 * 100) / 255) as u8;
     println!("[Battery] Raw level: {raw_level}/255 → {percent}%");
@@ -130,7 +135,7 @@ pub fn query_battery(product_id: u16, transaction_id: u8) -> rusb::Result<Batter
         .write_control(0x21, 0x09, 0x0300, 0x00, &charging_query, timeout)
         .inspect_err(|e| eprintln!("[Battery] SET_REPORT (charging) failed: {e:?}"))?;
 
-    std::thread::sleep(sleep_ms);
+    std::thread::sleep(sleep);
 
     let mut charging_response = [0u8; REPORT_LEN];
     handle

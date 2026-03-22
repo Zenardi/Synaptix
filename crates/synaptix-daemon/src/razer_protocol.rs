@@ -28,6 +28,20 @@ pub const TRANSACTION_ID_COBRA: u8 = 0x1F;
 /// Zero / catch-all LED zone (used by Cobra Pro and many newer mice).
 pub const LED_ZERO: u8 = 0x00;
 
+// ── USB response wait times (from razermouse_driver.h) ────────────────────────
+
+/// Minimum sleep (µs) after SET_REPORT before issuing GET_REPORT for standard mice.
+/// Source: `RAZER_MOUSE_WAIT_MIN_US` in razermouse_driver.h
+pub const _WAIT_STANDARD_US: u64 = 600;
+
+/// Minimum sleep (µs) for Cobra Pro, Basilisk V3 Pro, DA V3 Pro, and other new receivers.
+/// Source: `RAZER_NEW_MOUSE_RECEIVER_WAIT_MIN_US` in razermouse_driver.h
+pub const WAIT_NEW_RECEIVER_US: u64 = 31_000;
+
+/// Minimum sleep (µs) for Viper Ultimate, DA V2 Pro, Viper V3 Pro, and Viper receivers.
+/// Source: `RAZER_VIPER_MOUSE_RECEIVER_WAIT_MIN_US` in razermouse_driver.h
+pub const _WAIT_VIPER_RECEIVER_US: u64 = 59_900;
+
 /// Backlight LED zone — covers the logo on DA V2 Pro and similar mice.
 pub const LED_BACKLIGHT: u8 = 0x05;
 
