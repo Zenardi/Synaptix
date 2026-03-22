@@ -4,9 +4,7 @@ use synaptix_protocol::{BatteryState, LightingEffect, RazerDevice, RazerProductI
 /// Returns the (transaction_id, led_id) pair for a device's static lighting command.
 /// Derived from `razer_attr_write_matrix_effect_static_common` in razermouse_driver.c.
 fn lighting_params(product_id: &RazerProductId) -> (u8, u8) {
-    use crate::razer_protocol::{
-        LED_BACKLIGHT, LED_ZERO, TRANSACTION_ID_COBRA, TRANSACTION_ID_DA,
-    };
+    use crate::razer_protocol::{LED_BACKLIGHT, LED_ZERO, TRANSACTION_ID_COBRA, TRANSACTION_ID_DA};
     match product_id {
         // Cobra Pro / Basilisk V3 Pro group: transaction_id=0x1F, ZERO_LED
         RazerProductId::CobraProWired | RazerProductId::CobraProWireless => {
@@ -123,7 +121,7 @@ impl DeviceManager {
         match result {
             Ok(Ok(())) => println!("[SetLighting] USB transfer succeeded for {device_id}"),
             Ok(Err(e)) => eprintln!("[SetLighting] USB Transfer Failed: {e:?}"),
-            Err(e)     => eprintln!("[SetLighting] spawn_blocking panicked: {e:?}"),
+            Err(e) => eprintln!("[SetLighting] spawn_blocking panicked: {e:?}"),
         }
 
         true
@@ -138,7 +136,6 @@ impl DeviceManager {
         new_state_json: &str,
     ) -> zbus::Result<()>;
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -170,7 +167,9 @@ mod tests {
 
         manager.add_device("da-v2-pro".to_string(), device.clone());
 
-        let retrieved = manager.get_device("da-v2-pro").expect("device should exist");
+        let retrieved = manager
+            .get_device("da-v2-pro")
+            .expect("device should exist");
         assert_eq!(retrieved.name, device.name);
         assert_eq!(retrieved.product_id, device.product_id);
         assert_eq!(retrieved.battery_state, device.battery_state);
@@ -183,7 +182,9 @@ mod tests {
 
         manager.update_battery("da-v2-pro", BatteryState::Charging(80));
 
-        let device = manager.get_device("da-v2-pro").expect("device should exist");
+        let device = manager
+            .get_device("da-v2-pro")
+            .expect("device should exist");
         assert_eq!(device.battery_state, BatteryState::Charging(80));
     }
 
@@ -235,13 +236,10 @@ mod tests {
             .unwrap();
 
         // ── Assertion ──────────────────────────────────────────────────────
-        let signal = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            signal_stream.next(),
-        )
-        .await
-        .expect("timed out waiting for BatteryChanged signal")
-        .expect("signal stream ended unexpectedly");
+        let signal = tokio::time::timeout(std::time::Duration::from_secs(5), signal_stream.next())
+            .await
+            .expect("timed out waiting for BatteryChanged signal")
+            .expect("signal stream ended unexpectedly");
 
         let args = signal.args().expect("failed to parse signal args");
         assert_eq!(*args.device_id(), "da-v2-pro");

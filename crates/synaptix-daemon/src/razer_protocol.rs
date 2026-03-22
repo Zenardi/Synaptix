@@ -68,12 +68,12 @@ pub fn build_static_color_payload(
 ) -> [u8; REPORT_LEN] {
     let mut buf = [0u8; REPORT_LEN];
 
-    buf[1]  = transaction_id;
-    buf[5]  = 0x09; // data_size
-    buf[6]  = CMD_CLASS;
-    buf[7]  = CMD_ID;
-    buf[8]  = VARSTORE;
-    buf[9]  = led_id;
+    buf[1] = transaction_id;
+    buf[5] = 0x09; // data_size
+    buf[6] = CMD_CLASS;
+    buf[7] = CMD_ID;
+    buf[8] = VARSTORE;
+    buf[9] = led_id;
     buf[10] = EFFECT_STATIC;
     buf[13] = 0x01; // colour count
     buf[14] = r;
@@ -95,12 +95,12 @@ mod tests {
     #[test]
     fn test_static_color_payload_generation() {
         let mut expected = [0u8; 90];
-        expected[1]  = TRANSACTION_ID_DA; // 0x3F
-        expected[5]  = 0x09;
-        expected[6]  = 0x0F;
-        expected[7]  = 0x02;
-        expected[8]  = 0x01; // VARSTORE
-        expected[9]  = LED_BACKLIGHT; // 0x05
+        expected[1] = TRANSACTION_ID_DA; // 0x3F
+        expected[5] = 0x09;
+        expected[6] = 0x0F;
+        expected[7] = 0x02;
+        expected[8] = 0x01; // VARSTORE
+        expected[9] = LED_BACKLIGHT; // 0x05
         expected[10] = 0x01; // STATIC
         expected[13] = 0x01; // colour count
         expected[14] = 0xFF; // R
@@ -115,10 +115,10 @@ mod tests {
     #[test]
     fn test_static_color_payload_cobra_pro() {
         let payload = build_static_color_payload(TRANSACTION_ID_COBRA, LED_ZERO, 0xFF, 0x00, 0x00);
-        assert_eq!(payload[1],  TRANSACTION_ID_COBRA, "transaction_id mismatch");
-        assert_eq!(payload[9],  LED_ZERO,             "led_id mismatch");
-        assert_eq!(payload[14], 0xFF,                 "R mismatch");
-        assert_eq!(payload[88], 0xFA,                 "CRC mismatch");
+        assert_eq!(payload[1], TRANSACTION_ID_COBRA, "transaction_id mismatch");
+        assert_eq!(payload[9], LED_ZERO, "led_id mismatch");
+        assert_eq!(payload[14], 0xFF, "R mismatch");
+        assert_eq!(payload[88], 0xFA, "CRC mismatch");
     }
 
     /// Pure-black CRC for Cobra Pro params.
@@ -136,15 +136,15 @@ mod tests {
     #[test]
     fn test_static_color_payload_layout() {
         let payload = build_static_color_payload(TRANSACTION_ID_COBRA, LED_ZERO, 0x11, 0x22, 0x33);
-        assert_eq!(payload[0],  0x00,                 "status must be 0x00");
-        assert_eq!(payload[1],  TRANSACTION_ID_COBRA, "transaction_id mismatch");
-        assert_eq!(payload[5],  0x09,                 "data_size must be 9");
-        assert_eq!(payload[6],  0x0F,                 "command_class must be 0x0F");
-        assert_eq!(payload[7],  0x02,                 "command_id must be 0x02");
-        assert_eq!(payload[9],  LED_ZERO,             "led zone must be ZERO (0x00)");
-        assert_eq!(payload[14], 0x11,                 "R mismatch");
-        assert_eq!(payload[15], 0x22,                 "G mismatch");
-        assert_eq!(payload[16], 0x33,                 "B mismatch");
-        assert_eq!(payload[89], 0x00,                 "reserved byte must be 0x00");
+        assert_eq!(payload[0], 0x00, "status must be 0x00");
+        assert_eq!(payload[1], TRANSACTION_ID_COBRA, "transaction_id mismatch");
+        assert_eq!(payload[5], 0x09, "data_size must be 9");
+        assert_eq!(payload[6], 0x0F, "command_class must be 0x0F");
+        assert_eq!(payload[7], 0x02, "command_id must be 0x02");
+        assert_eq!(payload[9], LED_ZERO, "led zone must be ZERO (0x00)");
+        assert_eq!(payload[14], 0x11, "R mismatch");
+        assert_eq!(payload[15], 0x22, "G mismatch");
+        assert_eq!(payload[16], 0x33, "B mismatch");
+        assert_eq!(payload[89], 0x00, "reserved byte must be 0x00");
     }
 }

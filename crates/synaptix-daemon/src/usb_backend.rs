@@ -42,7 +42,10 @@ pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rus
         );
 
         let handle = match device.open() {
-            Ok(h) => { println!("[USB] Device opened successfully."); h }
+            Ok(h) => {
+                println!("[USB] Device opened successfully.");
+                h
+            }
             Err(e) => {
                 eprintln!("[USB] Failed to open device: {e:?}");
                 return Err(e);
@@ -52,7 +55,9 @@ pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rus
         // Automatically detach the kernel usbhid driver so we can claim the
         // interface; it is reattached when `handle` is dropped.
         if let Err(e) = handle.set_auto_detach_kernel_driver(true) {
-            eprintln!("[USB] set_auto_detach_kernel_driver failed (non-fatal on some kernels): {e:?}");
+            eprintln!(
+                "[USB] set_auto_detach_kernel_driver failed (non-fatal on some kernels): {e:?}"
+            );
             // Non-fatal: some kernels/platforms don't support this; continue anyway.
         }
 
@@ -68,8 +73,7 @@ pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rus
             0x09,   // bRequest: HID SET_REPORT
             0x0300, // wValue
             0x00,   // wIndex: interface 0
-            payload,
-            timeout,
+            payload, timeout,
         );
 
         match written {

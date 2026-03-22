@@ -116,7 +116,10 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_razer_devices, set_device_lighting])
+        .invoke_handler(tauri::generate_handler![
+            get_razer_devices,
+            set_device_lighting
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

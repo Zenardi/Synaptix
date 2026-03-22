@@ -21,9 +21,7 @@
           "/usr/lib/systemd/system/synaptix-daemon.service": "../../packaging/synaptix-daemon.service",
           "/etc/udev/rules.d/99-synaptix.rules": "../../packaging/99-synaptix.rules"
         },
-        "installScripts": {
-          "postInstall": "../../packaging/post_install.sh"
-        }
+        "postInstallScript": "../../packaging/post_install.sh"
       }
     }
   },

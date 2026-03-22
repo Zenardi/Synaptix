@@ -46,8 +46,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         last_emitted = Some(level);
 
         let new_state = BatteryState::Discharging(level);
-        let state_json = serde_json::to_string(&new_state)
-            .expect("BatteryState serialisation should not fail");
+        let state_json =
+            serde_json::to_string(&new_state).expect("BatteryState serialisation should not fail");
 
         let iface_ref = conn
             .object_server()
@@ -60,13 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             iface.update_battery("cobra-pro", new_state);
         }
 
-        DeviceManager::battery_changed(
-            &iface_ref.signal_emitter(),
-            "cobra-pro",
-            &state_json,
-        )
-        .await
-        .ok();
+        DeviceManager::battery_changed(&iface_ref.signal_emitter(), "cobra-pro", &state_json)
+            .await
+            .ok();
 
         println!("[Battery] BatteryChanged: cobra-pro → {level}%");
     }
