@@ -14,9 +14,9 @@ pub enum RazerProductId {
     CobraProWired,    // 0x00AF
     CobraProWireless, // 0x00B0
     // Headsets
-    KrakenUltimate,     // 0x0527
-    KrakenV3HyperSense, // 0x0560
-    KrakenV4Pro,        // 0x0568
+    KrakenUltimate, // 0x0527
+    KrakenKittyV2,  // 0x0560 (Razer Kraken Kitty V2)
+    KrakenV4Pro,    // 0x0568
     // Keyboards
     BlackWidowV3Pro, // 0x025A
     // Catch-all for devices not yet enumerated
@@ -57,7 +57,7 @@ impl RazerProductId {
             RazerProductId::CobraProWired => 0x00AF,
             RazerProductId::CobraProWireless => 0x00B0,
             RazerProductId::KrakenUltimate => 0x0527,
-            RazerProductId::KrakenV3HyperSense => 0x0560,
+            RazerProductId::KrakenKittyV2 => 0x0560,
             RazerProductId::KrakenV4Pro => 0x0568,
             RazerProductId::BlackWidowV3Pro => 0x025A,
             RazerProductId::Unknown(pid) => *pid,

@@ -565,10 +565,16 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
         0x026A => ("Razer Book (2020)", DeviceType::Keyboard, false),
 
         // ── Audio / Headsets ──────────────────────────────────────────────
+        0x0501 => ("Razer Kraken 7.1", DeviceType::Audio, false),
+        0x0504 => ("Razer Kraken 7.1 Chroma", DeviceType::Audio, false),
+        0x0506 => ("Razer Kraken 7.1 (Alternate)", DeviceType::Audio, false),
+        0x0510 => ("Razer Kraken 7.1 V2", DeviceType::Audio, false),
+        0x0520 => ("Razer Kraken Tournament Edition", DeviceType::Audio, false),
         0x0527 => ("Razer Kraken Ultimate", DeviceType::Audio, false),
-        0x0560 => ("Razer Kraken V3 HyperSense", DeviceType::Audio, false),
+        0x0560 => ("Razer Kraken Kitty V2", DeviceType::Audio, false),
         0x0567 => ("Razer Kraken V4 Pro (Receiver)", DeviceType::Audio, false),
         0x0568 => ("Razer Kraken V4 Pro", DeviceType::Audio, false),
+        0x0F19 => ("Razer Kraken Kitty Edition", DeviceType::Audio, false),
 
         _ => return None,
     };
@@ -651,5 +657,20 @@ mod tests {
                 .contains(&DeviceCapability::BatteryReporting),
             "Wireless keyboard must advertise BatteryReporting"
         );
+    }
+
+    #[test]
+    fn test_registry_resolves_kraken_kitty_edition() {
+        let profile = get_device_profile(0x0F19).expect("Kraken Kitty Edition must be in registry");
+        assert_eq!(profile.name, "Razer Kraken Kitty Edition");
+        assert_eq!(profile.device_type, DeviceType::Audio);
+        assert_eq!(profile.product_id, 0x0F19);
+    }
+
+    #[test]
+    fn test_registry_resolves_kraken_v4_pro() {
+        let profile = get_device_profile(0x0568).expect("Kraken V4 Pro must be in registry");
+        assert_eq!(profile.name, "Razer Kraken V4 Pro");
+        assert_eq!(profile.device_type, DeviceType::Audio);
     }
 }
