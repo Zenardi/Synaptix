@@ -11,6 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import "@testing-library/jest-dom/vitest";
 import App from "../App";
 import type { RazerDevice, BatteryState } from "../App";
@@ -72,7 +73,7 @@ describe("DeviceCard battery reactivity via Tauri events", () => {
   });
 
   it("renders the initial battery level fetched from the daemon", async () => {
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
 
     await waitFor(() =>
       expect(screen.getByText("75%")).toBeInTheDocument(),
@@ -81,7 +82,7 @@ describe("DeviceCard battery reactivity via Tauri events", () => {
   });
 
   it("updates DeviceCard when device-battery-updated event fires at 15%", async () => {
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
 
     // Wait for the initial device load (invoke resolves → setDevices → render).
     await waitFor(() =>
@@ -109,7 +110,7 @@ describe("DeviceCard battery reactivity via Tauri events", () => {
   });
 
   it("does not update an unrelated device when a foreign device_id is received", async () => {
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText("75%")).toBeInTheDocument());
 
     await act(async () => {
