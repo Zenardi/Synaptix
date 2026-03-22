@@ -7,20 +7,34 @@ use synaptix_protocol::{registry::get_device_profile, BatteryState, RazerDevice,
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut manager = DeviceManager::new();
-
-    // Seed the Cobra Pro as the active device — resolve name from the registry.
     let cobra_pid = RazerProductId::CobraProWireless.usb_pid();
+    let txn_id = razer_protocol::TRANSACTION_ID_COBRA;
+
     let cobra_name = get_device_profile(cobra_pid)
         .map(|p| p.name)
         .unwrap_or_else(|| "Razer Cobra Pro (Wireless)".to_string());
 
+    // Query real battery state immediately on startup so the UI never shows
+    // a stale placeholder value.
+    let initial_battery =
+        tokio::task::spawn_blocking(move || usb_backend::query_battery(cobra_pid, txn_id))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_else(|| {
+                eprintln!("[Battery] Startup query failed — defaulting to Unknown.");
+                BatteryState::Discharging(0)
+            });
+
+    println!("[Battery] Startup state: {initial_battery:?}");
+
+    let mut manager = DeviceManager::new();
     manager.add_device(
         "cobra-pro".to_string(),
         RazerDevice {
             name: cobra_name,
             product_id: RazerProductId::CobraProWireless,
-            battery_state: BatteryState::Discharging(75),
+            battery_state: initial_battery.clone(),
         },
     );
 
@@ -35,16 +49,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Poll battery state once per minute.  The signal is only emitted when the
     // state actually changes so the hardware microcontroller can idle between
     // polls without being woken by unnecessary USB traffic.
-    let pid = RazerProductId::CobraProWireless.usb_pid();
-    let txn_id = razer_protocol::TRANSACTION_ID_COBRA;
-    let mut last_emitted: Option<BatteryState> = None;
+    let mut last_emitted: Option<BatteryState> = Some(initial_battery);
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
         // Query real battery state from hardware inside a blocking thread so
         // the async runtime is not stalled by synchronous USB I/O.
         let new_state = match tokio::task::spawn_blocking(move || {
-            usb_backend::query_battery(pid, txn_id)
+            usb_backend::query_battery(cobra_pid, txn_id)
         })
         .await
         {
