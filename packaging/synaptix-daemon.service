@@ -1,0 +1,17 @@
+[Unit]
+Description=Synaptix Razer Device Daemon
+Documentation=https://github.com/zenardi/Synaptix
+Requires=dbus.service
+After=dbus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/synaptix-daemon
+Restart=on-failure
+RestartSec=5
+# Keep logs reachable via: journalctl -u synaptix-daemon
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

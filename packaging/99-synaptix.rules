@@ -1,0 +1,4 @@
+# /etc/udev/rules.d/99-synaptix.rules
+# Allow members of the plugdev group to access Razer USB devices without sudo.
+# Required by synaptix-daemon for raw USB (rusb) communication.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1532", MODE="0664", GROUP="plugdev"
