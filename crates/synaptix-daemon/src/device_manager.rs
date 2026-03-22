@@ -21,7 +21,7 @@ fn lighting_params(product_id: &RazerProductId) -> (u8, u8) {
 }
 
 pub struct DeviceManager {
-    devices: HashMap<String, RazerDevice>,
+    pub(crate) devices: HashMap<String, RazerDevice>,
     lighting: HashMap<String, LightingEffect>,
     settings: HashMap<String, DeviceSettings>,
 }
@@ -298,6 +298,16 @@ impl DeviceManager {
         device_id: &str,
         new_state_json: &str,
     ) -> zbus::Result<()>;
+
+    /// Emitted whenever a device's physical connection type changes
+    /// (e.g. USB cable plugged in while the dongle was active).
+    /// `connection_type_json` is the serde-JSON serialisation of `ConnectionType`.
+    #[zbus(signal)]
+    pub async fn connection_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        device_id: &str,
+        connection_type_json: &str,
+    ) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
@@ -321,6 +331,7 @@ mod tests {
             product_id: RazerProductId::DeathAdderV2Pro,
             battery_state: BatteryState::Discharging(75),
             capabilities: vec![],
+            connection_type: synaptix_protocol::ConnectionType::Wired,
         }
     }
 

@@ -21,6 +21,10 @@ trait SynaptixDaemon {
     /// Signal emitted by the daemon whenever a device's battery state changes.
     #[zbus(signal)]
     fn battery_changed(&self, device_id: &str, new_state_json: &str) -> zbus::Result<()>;
+
+    /// Signal emitted whenever a device's physical connection type changes.
+    #[zbus(signal)]
+    fn connection_changed(&self, device_id: &str, connection_type_json: &str) -> zbus::Result<()>;
 }
 
 /// Flat representation returned to the React frontend. The daemon injects
@@ -41,6 +45,13 @@ pub struct DeviceEntry {
 struct BatteryUpdatePayload {
     device_id: String,
     battery_state: BatteryState,
+}
+
+/// Payload carried by the Tauri `device-connection-changed` event.
+#[derive(Clone, serde::Serialize)]
+struct ConnectionUpdatePayload {
+    device_id: String,
+    connection_type: synaptix_protocol::ConnectionType,
 }
 
 /// Returns `true` if `org.synaptix.Daemon` has a registered name on the
@@ -149,13 +160,10 @@ async fn set_device_dpi(device_id: String, dpi: u16) -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Background task: subscribes to the daemon's `BatteryChanged` D-Bus signal
-/// and forwards each event to the React frontend via Tauri's event system.
+/// Background task: subscribes to the daemon's D-Bus signals and forwards
+/// each event to the React frontend via Tauri's event system.
 ///
-/// On startup the daemon may not be registered yet. We call
-/// `ensure_daemon_running` before subscribing and, if the signal subscription
-/// itself still fails with `ServiceUnknown`, attempt one more auto-start
-/// before propagating the error.
+/// Handles both `BatteryChanged` and `ConnectionChanged` signals.
 async fn listen_for_signals(
     app: AppHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -166,41 +174,52 @@ async fn listen_for_signals(
 
     let proxy = SynaptixDaemonProxy::new(&conn).await?;
 
-    let mut stream = match proxy.receive_battery_changed().await {
-        Ok(s) => s,
-        Err(e) => {
-            // A ServiceUnknown means the daemon was still not up after the
-            // first ensure call (e.g., slow machine). Try one more time.
-            let is_absent = matches!(
-                &e,
-                zbus::Error::MethodError(name, ..)
-                    if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
-            );
-            if is_absent {
-                let _ = std::process::Command::new("systemctl")
-                    .args(["--user", "start", "synaptix-daemon.service"])
-                    .status();
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                proxy.receive_battery_changed().await?
-            } else {
-                return Err(Box::new(e));
+    let (mut battery_stream, mut connection_stream) =
+        match tokio::try_join!(proxy.receive_battery_changed(), proxy.receive_connection_changed())
+        {
+            Ok(streams) => streams,
+            Err(e) => {
+                let is_absent = matches!(
+                    &e,
+                    zbus::Error::MethodError(name, ..)
+                        if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
+                );
+                if is_absent {
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", "start", "synaptix-daemon.service"])
+                        .status();
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::try_join!(
+                        proxy.receive_battery_changed(),
+                        proxy.receive_connection_changed()
+                    )?
+                } else {
+                    return Err(Box::new(e));
+                }
             }
-        }
-    };
+        };
 
-    while let Some(signal) = stream.next().await {
-        if let Ok(args) = signal.args() {
-            let device_id = args.device_id().to_string();
-            let new_state_json = args.new_state_json().to_string();
-
-            if let Ok(battery_state) = serde_json::from_str::<BatteryState>(&new_state_json) {
-                let payload = BatteryUpdatePayload {
-                    device_id,
-                    battery_state,
-                };
-                // emit() broadcasts to all windows — Tauri v2 API.
-                app.emit("device-battery-updated", payload).ok();
+    loop {
+        tokio::select! {
+            Some(signal) = battery_stream.next() => {
+                if let Ok(args) = signal.args() {
+                    let device_id = args.device_id().to_string();
+                    let new_state_json = args.new_state_json().to_string();
+                    if let Ok(battery_state) = serde_json::from_str::<BatteryState>(&new_state_json) {
+                        app.emit("device-battery-updated", BatteryUpdatePayload { device_id, battery_state }).ok();
+                    }
+                }
             }
+            Some(signal) = connection_stream.next() => {
+                if let Ok(args) = signal.args() {
+                    let device_id = args.device_id().to_string();
+                    let ct_json = args.connection_type_json().to_string();
+                    if let Ok(connection_type) = serde_json::from_str::<synaptix_protocol::ConnectionType>(&ct_json) {
+                        app.emit("device-connection-changed", ConnectionUpdatePayload { device_id, connection_type }).ok();
+                    }
+                }
+            }
+            else => break,
         }
     }
 

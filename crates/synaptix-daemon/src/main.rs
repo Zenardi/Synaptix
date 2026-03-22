@@ -65,12 +65,19 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     let wait_us = razer_protocol::WAIT_NEW_RECEIVER_US;
 
     // Detect which Cobra Pro PID is on the bus right now.
-    let (mut cobra_pid, mut cobra_product_id, mut cobra_conn, mut cobra_name) =
+    let (initial_pid, initial_product_id, initial_conn, initial_name) =
         tokio::task::spawn_blocking(detect_cobra_pro)
             .await
             .unwrap_or_else(|_| (0x00B0, RazerProductId::CobraProWireless, ConnectionType::Bluetooth, "Razer Cobra Pro".to_string()));
 
-    log::info!("[Detect] Cobra Pro on USB: PID=0x{cobra_pid:04X} connection={}", cobra_conn.label());
+    log::info!("[Detect] Cobra Pro on USB: PID=0x{initial_pid:04X} connection={}", initial_conn.label());
+
+    // Shared state: the watch task owns mutation; the battery loop reads it.
+    let shared: std::sync::Arc<tokio::sync::Mutex<(u16, String)>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new((initial_pid, initial_name.clone())));
+
+    let cobra_pid = initial_pid;
+    let cobra_name = initial_name.clone();
 
     // Query real battery state on startup so the tray shows real data immediately.
     let initial_battery = {
@@ -97,17 +104,17 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     .ok();
 
     let mut manager = DeviceManager::new();
-    let cobra_capabilities = get_device_profile(cobra_pid)
+    let cobra_capabilities = get_device_profile(initial_pid)
         .map(|p| p.capabilities)
         .unwrap_or_default();
     manager.add_device(
         "cobra-pro".to_string(),
         RazerDevice {
-            name: cobra_name.clone(),
-            product_id: cobra_product_id.clone(),
+            name: initial_name.clone(),
+            product_id: initial_product_id,
             battery_state: initial_battery.clone(),
             capabilities: cobra_capabilities,
-            connection_type: cobra_conn.clone(),
+            connection_type: initial_conn,
         },
     );
 
@@ -133,43 +140,95 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
 
     log::info!("Synaptix Daemon running on org.synaptix.Daemon at /org/synaptix/Daemon");
 
-    let mut last_emitted: Option<BatteryState> = Some(initial_battery);
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+    // ── Connection-watch task (every 3 s) ────────────────────────────────────
+    // Cheap USB descriptor scan — no device open, no I/O. Fires a D-Bus signal
+    // the moment the user switches from dongle to cable (or vice versa) so the
+    // React UI updates within seconds without a reload.
+    let conn_watch = conn.clone();
+    let shared_watch = std::sync::Arc::clone(&shared);
+    let mut watch_pid = initial_pid;
+    let mut watch_conn = {
+        // Reconstruct from initial detection for the watch loop's bookkeeping.
+        let (_, _, c, _) = tokio::task::spawn_blocking(detect_cobra_pro)
+            .await
+            .unwrap_or_else(|_| (initial_pid, RazerProductId::CobraProWireless, ConnectionType::Bluetooth, initial_name.clone()));
+        c
+    };
+    let mut watch_product_id = {
+        if initial_pid == 0x00AF { RazerProductId::CobraProWired } else { RazerProductId::CobraProWireless }
+    };
 
-        // Re-detect the connection type — user may have switched from dongle to cable.
-        let (new_pid, new_product_id, new_conn, new_name) =
-            tokio::task::spawn_blocking(detect_cobra_pro)
-                .await
-                .unwrap_or_else(|_| (cobra_pid, cobra_product_id.clone(), cobra_conn.clone(), cobra_name.clone()));
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-        if new_pid != cobra_pid || new_conn != cobra_conn {
+            let (new_pid, new_product_id, new_conn, new_name) =
+                tokio::task::spawn_blocking(detect_cobra_pro)
+                    .await
+                    .unwrap_or_else(|_| {
+                        (watch_pid, watch_product_id.clone(), watch_conn.clone(), String::new())
+                    });
+
+            if new_pid == watch_pid && new_conn == watch_conn {
+                continue;
+            }
+
             log::info!(
                 "[Detect] Connection changed: {} → {} (PID 0x{:04X} → 0x{:04X})",
-                cobra_conn.label(), new_conn.label(), cobra_pid, new_pid
+                watch_conn.label(), new_conn.label(), watch_pid, new_pid
             );
-            cobra_pid = new_pid;
-            cobra_product_id = new_product_id;
-            cobra_conn = new_conn.clone();
-            cobra_name = new_name;
 
-            let iface_ref = conn
+            watch_pid = new_pid;
+            watch_product_id = new_product_id.clone();
+            watch_conn = new_conn.clone();
+
+            // Update shared state so the battery loop uses the right PID.
+            {
+                let mut s = shared_watch.lock().await;
+                *s = (new_pid, new_name.clone());
+            }
+
+            let Ok(iface_ref) = conn_watch
                 .object_server()
                 .interface::<_, DeviceManager>("/org/synaptix/Daemon")
                 .await
-                .expect("DeviceManager interface must be registered");
+            else {
+                continue;
+            };
+
             {
                 let mut iface = iface_ref.get_mut().await;
                 iface.update_connection(
                     "cobra-pro",
-                    cobra_name.clone(),
-                    cobra_product_id.clone(),
-                    new_conn,
+                    new_name,
+                    new_product_id,
+                    new_conn.clone(),
                 );
             }
-        }
 
-        let pid = cobra_pid;
+            let conn_json = serde_json::to_string(&new_conn)
+                .unwrap_or_else(|_| "\"Bluetooth\"".to_string());
+            DeviceManager::connection_changed(
+                iface_ref.signal_emitter(),
+                "cobra-pro",
+                &conn_json,
+            )
+            .await
+            .ok();
+        }
+    });
+
+    // ── Battery-poll loop (every 60 s) ────────────────────────────────────────
+    let mut last_emitted: Option<BatteryState> = Some(initial_battery);
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+
+        // Read the current PID and name from shared state (updated by watch task).
+        let (pid, current_name) = {
+            let s = shared.lock().await;
+            s.clone()
+        };
+
         let new_state = match tokio::task::spawn_blocking(move || {
             usb_backend::query_battery(pid, txn_id, wait_us)
         })
@@ -189,7 +248,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         // Always push to tray so the icon stays current.
         let (pct, charging) = battery_to_pct(&new_state);
         tx.send(TrayUpdate {
-            device_name: cobra_name.clone(),
+            device_name: current_name,
             percentage: pct,
             is_charging: charging,
         })

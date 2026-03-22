@@ -30,6 +30,12 @@ interface BatteryUpdatePayload {
   battery_state: BatteryState;
 }
 
+// Matches ConnectionUpdatePayload emitted by the Tauri signal listener.
+interface ConnectionUpdatePayload {
+  device_id: string;
+  connection_type: ConnectionType;
+}
+
 export function getBatteryLevel(state: BatteryState): number {
   if (state === "Full") return 100;
   if (typeof state === "object" && "Charging" in state) return state.Charging;
@@ -62,6 +68,24 @@ function App() {
         setDevices((prev) =>
           prev.map((d) =>
             d.device_id === device_id ? { ...d, battery_state } : d,
+          ),
+        );
+      },
+    );
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
+  // Real-time connection type updates (wired ↔ dongle ↔ bluetooth)
+  useEffect(() => {
+    const unlisten = listen<ConnectionUpdatePayload>(
+      "device-connection-changed",
+      (event) => {
+        const { device_id, connection_type } = event.payload;
+        setDevices((prev) =>
+          prev.map((d) =>
+            d.device_id === device_id ? { ...d, connection_type } : d,
           ),
         );
       },
