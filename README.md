@@ -13,6 +13,8 @@ Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https:
 
 </div>
 
+![synaptix](./docs/synaptix.png)
+
 ---
 
 ## ⚠️ Project Status

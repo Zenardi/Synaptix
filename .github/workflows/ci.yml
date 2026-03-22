@@ -7,11 +7,13 @@ on:
     paths-ignore:
       - "README.md"
       - "*.md"
+      - "docs/**"
   pull_request:
     branches: [main]
     paths-ignore:
       - "README.md"
       - "*.md"
+      - "docs/**"
 
 jobs:
   build-and-test:
