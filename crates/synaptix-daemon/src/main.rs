@@ -27,18 +27,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Synaptix Daemon running on org.synaptix.Daemon at /org/synaptix/Daemon");
 
-    // Simulate battery drain: decrement level every 10 s and broadcast the
-    // BatteryChanged signal so connected UIs update in real-time.
+    // Poll battery state once per minute.  The signal is only emitted when the
+    // level actually changes so the hardware microcontroller can idle between
+    // polls without being woken by unnecessary USB traffic.
     let mut level: u8 = 75;
+    let mut last_emitted: Option<u8> = None;
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+
+        // TODO: replace with a real USB battery query via usb_backend.
         level = level.saturating_sub(1);
+
+        // Skip the update if nothing changed since the last emission.
+        if last_emitted == Some(level) {
+            println!("[Battery] No change ({level}%), skipping D-Bus signal.");
+            continue;
+        }
+        last_emitted = Some(level);
 
         let new_state = BatteryState::Discharging(level);
         let state_json = serde_json::to_string(&new_state)
             .expect("BatteryState serialisation should not fail");
 
-        // Update internal state through the registered interface.
         let iface_ref = conn
             .object_server()
             .interface::<_, DeviceManager>("/org/synaptix/Daemon")
@@ -50,7 +60,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             iface.update_battery("cobra-pro", new_state);
         }
 
-        // Emit the D-Bus signal so all subscribers are notified.
         DeviceManager::battery_changed(
             &iface_ref.signal_emitter(),
             "cobra-pro",
@@ -59,6 +68,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .ok();
 
-        println!("BatteryChanged: da-v2-pro → {level}%");
+        println!("[Battery] BatteryChanged: cobra-pro → {level}%");
     }
 }
