@@ -165,6 +165,56 @@ pub fn build_set_dpi_payload(transaction_id: u8, dpi_x: u16, dpi_y: u16) -> [u8;
     buf
 }
 
+// ── Response status bytes (razercommon.h) ─────────────────────────────────────
+
+/// The firmware is still processing a previous command — wait and retry.
+pub const STATUS_BUSY: u8 = 0x01;
+/// Command was accepted and the response arguments are valid.
+pub const STATUS_SUCCESSFUL: u8 = 0x02;
+/// Firmware reported a command failure.
+pub const STATUS_FAILURE: u8 = 0x03;
+/// Command timed out in firmware.
+pub const STATUS_TIMEOUT: u8 = 0x04;
+/// Command is not supported by this device/firmware.
+pub const STATUS_NOT_SUPPORTED: u8 = 0x05;
+
+/// Validates a GET_REPORT response against the originating request bytes.
+///
+/// Mirrors the checks in `razer_send_payload` (razermouse_driver.c):
+/// - `response[0]` must be `STATUS_SUCCESSFUL` (0x02).  If `STATUS_BUSY`
+///   (0x01), returns `Err(false)` to signal "retry".  Any other status is a
+///   hard failure — returns `Err(true)`.
+/// - `response[6]` must equal the request `command_class`.
+/// - `response[7]` must equal the request `command_id`.
+///
+/// Returns `Ok(())` when the response is valid and arguments can be read.
+pub fn validate_response(
+    response: &[u8; REPORT_LEN],
+    command_class: u8,
+    command_id: u8,
+) -> Result<(), bool> {
+    match response[0] {
+        STATUS_SUCCESSFUL => {}
+        STATUS_BUSY => return Err(false), // soft error — caller should retry
+        _ => {
+            eprintln!(
+                "[USB] Response status=0x{:02x} for cmd 0x{command_class:02x}/0x{command_id:02x}",
+                response[0]
+            );
+            return Err(true); // hard error
+        }
+    }
+    if response[6] != command_class || response[7] != command_id {
+        eprintln!(
+            "[USB] Response echo mismatch: expected class=0x{command_class:02x} id=0x{command_id:02x}, \
+             got class=0x{:02x} id=0x{:02x}",
+            response[6], response[7]
+        );
+        return Err(true);
+    }
+    Ok(())
+}
+
 // ── Battery / Power queries ───────────────────────────────────────────────────
 
 /// Command class for battery and power management queries.

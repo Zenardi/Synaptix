@@ -1,5 +1,6 @@
 use crate::razer_protocol::{
-    build_battery_query_payload, build_charging_query_payload, RAZER_VID, REPORT_LEN,
+    build_battery_query_payload, build_charging_query_payload, validate_response,
+    CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use synaptix_protocol::{BatteryState, ConnectionType};
@@ -142,22 +143,50 @@ pub fn query_battery(
     let sleep = std::time::Duration::from_micros(wait_us);
 
     // ── Battery level ─────────────────────────────────────────────────────────
-    let level_query = build_battery_query_payload(transaction_id);
+    // Retry up to 3 times when the firmware returns STATUS_BUSY (0x01).
+    // The reference driver (razermouse_driver.c) ignores BUSY with a "TODO",
+    // but in practice a brief 10ms extra wait and retry is enough.
+    let percent = {
+        let level_query = build_battery_query_payload(transaction_id);
+        let mut result: Option<u8> = None;
 
-    handle
-        .write_control(0x21, 0x09, 0x0300, 0x00, &level_query, timeout)
-        .inspect_err(|e| eprintln!("[Battery] SET_REPORT (level) failed: {e:?}"))?;
+        for attempt in 1..=3u8 {
+            handle
+                .write_control(0x21, 0x09, 0x0300, 0x00, &level_query, timeout)
+                .inspect_err(|e| eprintln!("[Battery] SET_REPORT (level) failed: {e:?}"))?;
 
-    std::thread::sleep(sleep);
+            std::thread::sleep(sleep);
 
-    let mut level_response = [0u8; REPORT_LEN];
-    handle
-        .read_control(0xA1, 0x01, 0x0300, 0x00, &mut level_response, timeout)
-        .inspect_err(|e| eprintln!("[Battery] GET_REPORT (level) failed: {e:?}"))?;
+            let mut level_response = [0u8; REPORT_LEN];
+            handle
+                .read_control(0xA1, 0x01, 0x0300, 0x00, &mut level_response, timeout)
+                .inspect_err(|e| eprintln!("[Battery] GET_REPORT (level) failed: {e:?}"))?;
 
-    let raw_level = level_response[9];
-    let percent = crate::razer_protocol::parse_battery_response(&level_response);
-    println!("[Battery] Raw level: {raw_level}/255 → {percent}%");
+            match validate_response(&level_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL) {
+                Ok(()) => {
+                    let raw = level_response[9];
+                    let pct = ((raw as u16 * 100) / 255) as u8;
+                    println!("[Battery] Level: raw={raw}/255 → {pct}% (attempt {attempt})");
+                    result = Some(pct);
+                    break;
+                }
+                Err(false) => {
+                    // BUSY — wait a little longer and retry
+                    println!("[Battery] BUSY on level query (attempt {attempt}), retrying…");
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(true) => {
+                    eprintln!("[Battery] Level query failed (bad response status).");
+                    return Err(rusb::Error::Io);
+                }
+            }
+        }
+
+        result.ok_or_else(|| {
+            eprintln!("[Battery] Level query BUSY after 3 attempts.");
+            rusb::Error::Io
+        })?
+    };
 
     // ── Charging status ───────────────────────────────────────────────────────
     //
@@ -207,16 +236,35 @@ fn query_charging_status(
 ) -> rusb::Result<bool> {
     let charging_query = build_charging_query_payload(transaction_id);
 
-    handle
-        .write_control(0x21, 0x09, 0x0300, 0x00, &charging_query, timeout)
-        .inspect_err(|e| eprintln!("[Battery] SET_REPORT (charging) failed: {e:?}"))?;
+    for attempt in 1..=3u8 {
+        handle
+            .write_control(0x21, 0x09, 0x0300, 0x00, &charging_query, timeout)
+            .inspect_err(|e| eprintln!("[Battery] SET_REPORT (charging) failed: {e:?}"))?;
 
-    std::thread::sleep(*sleep);
+        std::thread::sleep(*sleep);
 
-    let mut charging_response = [0u8; REPORT_LEN];
-    handle
-        .read_control(0xA1, 0x01, 0x0300, 0x00, &mut charging_response, timeout)
-        .inspect_err(|e| eprintln!("[Battery] GET_REPORT (charging) failed: {e:?}"))?;
+        let mut charging_response = [0u8; REPORT_LEN];
+        handle
+            .read_control(0xA1, 0x01, 0x0300, 0x00, &mut charging_response, timeout)
+            .inspect_err(|e| eprintln!("[Battery] GET_REPORT (charging) failed: {e:?}"))?;
 
-    Ok(charging_response[9] != 0)
+        match validate_response(&charging_response, CMD_CLASS_BATTERY, CMD_ID_CHARGING_STATUS) {
+            Ok(()) => {
+                let is_charging = charging_response[9] != 0;
+                println!("[Battery] Charging status: {is_charging} (attempt {attempt})");
+                return Ok(is_charging);
+            }
+            Err(false) => {
+                println!("[Battery] BUSY on charging query (attempt {attempt}), retrying…");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(true) => {
+                eprintln!("[Battery] Charging query failed (bad response status).");
+                return Err(rusb::Error::Io);
+            }
+        }
+    }
+
+    eprintln!("[Battery] Charging query BUSY after 3 attempts.");
+    Err(rusb::Error::Io)
 }
