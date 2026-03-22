@@ -39,6 +39,25 @@ pub enum LightingEffect {
     Spectrum,
 }
 
+/// Persistent user preferences for a single device.
+/// Stored in `~/.config/synaptix/devices.json` and auto-applied on daemon start.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeviceSettings {
+    pub lighting: Option<LightingEffect>,
+    pub dpi: Option<u16>,
+}
+
+/// A sensor (optical / laser) configuration command for a mouse.
+///
+/// Wire format (serde defaults):
+///   SetDpi: `{ "SetDpi": { "x": 800, "y": 800 } }`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SensorCommand {
+    /// Set the X and Y DPI independently.
+    /// Valid range: 100–45 000 (device-specific maximum applies at the hardware level).
+    SetDpi { x: u16, y: u16 },
+}
+
 /// The battery / charging state reported by `razer.device.power`.
 ///
 /// `Charging(u8)` and `Discharging(u8)` carry the current charge level (0–100).
@@ -86,6 +105,7 @@ pub struct RazerDevice {
     pub name: String,
     pub product_id: RazerProductId,
     pub battery_state: BatteryState,
+    pub capabilities: Vec<registry::DeviceCapability>,
 }
 
 #[cfg(test)]
@@ -98,6 +118,7 @@ mod tests {
             name: "Razer DeathAdder V2 Pro".to_string(),
             product_id: RazerProductId::DeathAdderV2Pro,
             battery_state: BatteryState::Discharging(75),
+            capabilities: vec![],
         };
 
         let json = serde_json::to_string(&device).expect("serialization failed");

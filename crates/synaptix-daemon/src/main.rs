@@ -1,3 +1,4 @@
+mod config;
 mod device_manager;
 mod razer_protocol;
 mod tray;
@@ -52,14 +53,21 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     .ok();
 
     let mut manager = DeviceManager::new();
+    let cobra_capabilities = get_device_profile(cobra_pid)
+        .map(|p| p.capabilities)
+        .unwrap_or_default();
     manager.add_device(
         "cobra-pro".to_string(),
         RazerDevice {
             name: cobra_name.clone(),
             product_id: RazerProductId::CobraProWireless,
             battery_state: initial_battery.clone(),
+            capabilities: cobra_capabilities,
         },
     );
+
+    // Auto-apply any persisted settings (lighting, DPI) to hardware at startup.
+    tokio::task::block_in_place(|| manager.apply_saved_settings());
 
     let conn = match zbus::connection::Builder::session()
         .and_then(|b| b.name("org.synaptix.Daemon"))
@@ -139,6 +147,9 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
 }
 
 fn main() {
+    // Initialise structured logging; RUST_LOG controls verbosity (default: info).
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     // GTK must be initialised on the main thread before any GLib/AppIndicator
     // calls.  The entire GTK event loop runs here; tokio lives on a worker thread.
     gtk::init().expect("GTK initialisation failed");

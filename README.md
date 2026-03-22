@@ -70,6 +70,14 @@ Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https:
       - [Keyboards (106 PIDs)](#keyboards-106-pids)
     - [Adding a new device](#adding-a-new-device)
   - [Contributing](#contributing)
+    - [Reporting Issues \& Requesting Features](#reporting-issues--requesting-features)
+    - [Local Development Setup](#local-development-setup)
+      - [1. System packages (Ubuntu / Debian / Pop!\_OS)](#1-system-packages-ubuntu--debian--pop_os)
+      - [2. Rust toolchain](#2-rust-toolchain)
+      - [3. Node.js 22](#3-nodejs-22)
+      - [4. Clone and bootstrap](#4-clone-and-bootstrap)
+      - [5. Run the full check suite locally](#5-run-the-full-check-suite-locally)
+      - [6. Run in development](#6-run-in-development)
     - [Workflow](#workflow)
     - [Code style](#code-style)
   - [License](#license)
@@ -216,7 +224,8 @@ npm run tauri dev
 
 Vite serves the React frontend at `http://localhost:5173` and Tauri wraps it in a frameless native window. Hot-module replacement (HMR) is active — React changes reflect instantly.
 
-> **Note:** The daemon must be running before you open the UI, otherwise the D-Bus proxy will fail to connect and no devices will be displayed.
+> [!NOTE]
+> The daemon must be running before you open the UI, otherwise the D-Bus proxy will fail to connect and no devices will be displayed.
 
 ---
 
@@ -408,6 +417,101 @@ All 209+ devices below are recognized by the daemon out of the box.
 ## Contributing
 
 Contributions are welcome. Please follow the development rules below to keep the architecture clean.
+
+### Reporting Issues & Requesting Features
+
+Use the structured GitHub Issue templates to ensure reports have the hardware data and log output needed for the AI-assisted development pipeline:
+
+- 🐛 **[Report a Bug](.github/ISSUE_TEMPLATE/REPORT_BUG.md)** — D-Bus failures, USB errors, incorrect hardware behaviour. Include your daemon logs (`journalctl --user -u synaptix-daemon -n 50`).
+- ✨ **[Request a Feature](.github/ISSUE_TEMPLATE/REQUEST_FEATURE.md)** — New lighting effects, DPI profiles, device support. Include the target PID and the relevant OpenRazer Python file path.
+
+### Local Development Setup
+
+Before you can build and run Synaptix locally, install the following prerequisites.
+
+#### 1. System packages (Ubuntu / Debian / Pop!\_OS)
+
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  build-essential curl wget file \
+  libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev \
+  libgtk-3-dev \
+  libdbus-1-dev \
+  libudev-dev \
+  libssl-dev \
+  libxdo-dev \
+  librsvg2-dev
+```
+
+| Package | Required by |
+|---|---|
+| `libwebkit2gtk-4.1-dev` | Tauri WebView runtime |
+| `libayatana-appindicator3-dev` | System tray AppIndicator (daemon) |
+| `libgtk-3-dev` | GTK main loop used by `tray-icon` |
+| `libdbus-1-dev` | `zbus` D-Bus bindings |
+| `libudev-dev` | `rusb` USB device enumeration |
+| `libssl-dev` | TLS in Tauri updater |
+| `libxdo-dev` | Tauri window management on X11 |
+| `librsvg2-dev` | SVG icon rendering in Tauri |
+
+#### 2. Rust toolchain
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup toolchain install stable
+rustup component add rustfmt clippy
+```
+
+Minimum supported: **Rust stable** (same as CI).
+
+#### 3. Node.js 22
+
+```bash
+# via nvm (recommended)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+nvm install 22 && nvm use 22
+```
+
+Or download directly from [nodejs.org](https://nodejs.org).
+
+#### 4. Clone and bootstrap
+
+```bash
+git clone https://github.com/Zenardi/Synaptix.git
+cd Synaptix
+cd crates/synaptix-ui && npm ci && cd ../..
+```
+
+#### 5. Run the full check suite locally
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace
+cd crates/synaptix-ui && npm test
+```
+
+#### 6. Run in development
+
+```bash
+# Daemon (terminal 1)
+cargo run -p synaptix-daemon
+
+# UI dev server (terminal 2)
+cd crates/synaptix-ui && npm run tauri dev
+```
+
+> **USB permissions:** Add yourself to the `plugdev` group so the daemon can open USB endpoints without `sudo`:
+> ```bash
+> sudo usermod -aG plugdev $USER
+> echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="1532", MODE="0664", GROUP="plugdev"' \
+>   | sudo tee /etc/udev/rules.d/99-razer.rules
+> sudo udevadm control --reload-rules && sudo udevadm trigger
+> # Log out and back in for the group change to take effect
+> ```
+
+---
 
 ### Workflow
 

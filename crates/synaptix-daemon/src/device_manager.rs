@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use synaptix_protocol::{BatteryState, LightingEffect, RazerDevice, RazerProductId};
+use synaptix_protocol::{
+    registry::{get_device_profile, DeviceCapability},
+    BatteryState, DeviceSettings, LightingEffect, RazerDevice, RazerProductId,
+};
 
 /// Returns the (transaction_id, led_id) pair for a device's static lighting command.
 /// Derived from `razer_attr_write_matrix_effect_static_common` in razermouse_driver.c.
@@ -20,6 +23,7 @@ fn lighting_params(product_id: &RazerProductId) -> (u8, u8) {
 pub struct DeviceManager {
     devices: HashMap<String, RazerDevice>,
     lighting: HashMap<String, LightingEffect>,
+    settings: HashMap<String, DeviceSettings>,
 }
 
 impl DeviceManager {
@@ -27,6 +31,7 @@ impl DeviceManager {
         Self {
             devices: HashMap::new(),
             lighting: HashMap::new(),
+            settings: crate::config::load_settings(),
         }
     }
 
@@ -54,6 +59,53 @@ impl DeviceManager {
     pub fn update_lighting(&mut self, id: &str, effect: LightingEffect) {
         if self.devices.contains_key(id) {
             self.lighting.insert(id.to_string(), effect);
+        }
+    }
+
+    /// Dispatches saved settings to all registered devices via USB.
+    /// Called once at daemon startup after devices are registered.
+    pub fn apply_saved_settings(&self) {
+        for (device_id, device) in &self.devices {
+            let Some(settings) = self.settings.get(device_id) else {
+                continue;
+            };
+
+            let pid = device.product_id.usb_pid();
+            let (txn_id, led_id) = lighting_params(&device.product_id);
+
+            if let Some(effect) = &settings.lighting {
+                let payload = match effect {
+                    synaptix_protocol::LightingEffect::Static([r, g, b]) => {
+                        crate::razer_protocol::build_static_color_payload(
+                            txn_id, led_id, *r, *g, *b,
+                        )
+                    }
+                    synaptix_protocol::LightingEffect::Breathing([r, g, b]) => {
+                        crate::razer_protocol::build_breathing_payload(txn_id, led_id, *r, *g, *b)
+                    }
+                    synaptix_protocol::LightingEffect::Spectrum => {
+                        crate::razer_protocol::build_spectrum_payload(txn_id, led_id)
+                    }
+                };
+                if let Err(e) = crate::usb_backend::send_control_transfer(pid, &payload) {
+                    log::warn!("[AutoApply] Lighting failed for {device_id}: {e:?}");
+                } else {
+                    log::info!("[AutoApply] Lighting restored for {device_id}");
+                }
+            }
+
+            if let Some(dpi) = settings.dpi {
+                let has_dpi = get_device_profile(pid)
+                    .is_some_and(|p| p.capabilities.contains(&DeviceCapability::DpiControl));
+                if has_dpi {
+                    let payload = crate::razer_protocol::build_set_dpi_payload(txn_id, dpi, dpi);
+                    if let Err(e) = crate::usb_backend::send_control_transfer(pid, &payload) {
+                        log::warn!("[AutoApply] DPI failed for {device_id}: {e:?}");
+                    } else {
+                        log::info!("[AutoApply] DPI {dpi} restored for {device_id}");
+                    }
+                }
+            }
         }
     }
 }
@@ -108,6 +160,11 @@ impl DeviceManager {
 
         self.lighting.insert(device_id.clone(), effect.clone());
 
+        // Persist the new lighting preference.
+        let entry = self.settings.entry(device_id.clone()).or_default();
+        entry.lighting = Some(effect.clone());
+        crate::config::save_settings(&self.settings);
+
         println!("[SetLighting] Dispatching {effect:?} to USB backend …");
 
         // Await the blocking task so errors are never swallowed.
@@ -149,6 +206,62 @@ impl DeviceManager {
         true
     }
 
+    /// Sets the DPI for a mouse device and dispatches the raw USB payload.
+    ///
+    /// `device_id` must match a registered device. `x` and `y` are the DPI
+    /// values for each axis (valid range: 100–45 000; enforced by hardware).
+    ///
+    /// Returns `true` if the device exists and the command was dispatched,
+    /// `false` if the device ID is unknown.
+    async fn set_dpi(&mut self, device_id: String, x: u16, y: u16) -> bool {
+        log::info!("[SetDpi] request — device={device_id} x={x} y={y}");
+
+        let Some(device) = self.devices.get(&device_id) else {
+            log::warn!("[SetDpi] rejected — unknown device ID: {device_id}");
+            return false;
+        };
+
+        let product_id = device.product_id.usb_pid();
+
+        // Guard: only dispatch if the registry advertises DpiControl capability.
+        let has_dpi = get_device_profile(product_id)
+            .is_some_and(|p| p.capabilities.contains(&DeviceCapability::DpiControl));
+        if !has_dpi {
+            log::warn!(
+                "[SetDpi] rejected — PID=0x{product_id:04X} ({device_id}) does not advertise DpiControl capability"
+            );
+            return false;
+        }
+
+        let (txn_id, _) = lighting_params(&device.product_id);
+        log::info!("[SetDpi] dispatching — PID=0x{product_id:04X} txn_id=0x{txn_id:02X}");
+
+        let result = tokio::task::spawn_blocking(move || {
+            let payload = crate::razer_protocol::build_set_dpi_payload(txn_id, x, y);
+            crate::usb_backend::send_control_transfer(product_id, &payload)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {
+                log::info!("[SetDpi] USB transfer succeeded for {device_id}");
+                // Persist the new DPI preference.
+                let entry = self.settings.entry(device_id.clone()).or_default();
+                entry.dpi = Some(x);
+                crate::config::save_settings(&self.settings);
+                true
+            }
+            Ok(Err(e)) => {
+                log::error!("[SetDpi] USB transfer failed for {device_id}: {e:?}");
+                false
+            }
+            Err(e) => {
+                log::error!("[SetDpi] spawn_blocking panicked for {device_id}: {e:?}");
+                false
+            }
+        }
+    }
+
     /// Emitted whenever a device's battery state changes.
     /// `new_state_json` is the serde-JSON serialisation of `BatteryState`.
     #[zbus(signal)]
@@ -179,6 +292,7 @@ mod tests {
             name: "Razer DeathAdder V2 Pro".to_string(),
             product_id: RazerProductId::DeathAdderV2Pro,
             battery_state: BatteryState::Discharging(75),
+            capabilities: vec![],
         }
     }
 
