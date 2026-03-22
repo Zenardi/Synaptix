@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use synaptix_protocol::{BatteryState, LightingEffect, RazerDevice, RazerProductId};
+use synaptix_protocol::{
+    registry::{get_device_profile, DeviceCapability},
+    BatteryState, LightingEffect, RazerDevice, RazerProductId,
+};
 
 /// Returns the (transaction_id, led_id) pair for a device's static lighting command.
 /// Derived from `razer_attr_write_matrix_effect_static_common` in razermouse_driver.c.
@@ -157,16 +160,27 @@ impl DeviceManager {
     /// Returns `true` if the device exists and the command was dispatched,
     /// `false` if the device ID is unknown.
     async fn set_dpi(&mut self, device_id: String, x: u16, y: u16) -> bool {
-        println!("[SetDpi] device={device_id} x={x} y={y}");
+        log::info!("[SetDpi] request — device={device_id} x={x} y={y}");
 
         let Some(device) = self.devices.get(&device_id) else {
-            eprintln!("[SetDpi] Unknown device ID: {device_id}");
+            log::warn!("[SetDpi] rejected — unknown device ID: {device_id}");
             return false;
         };
 
         let product_id = device.product_id.usb_pid();
+
+        // Guard: only dispatch if the registry advertises DpiControl capability.
+        let has_dpi = get_device_profile(product_id)
+            .is_some_and(|p| p.capabilities.contains(&DeviceCapability::DpiControl));
+        if !has_dpi {
+            log::warn!(
+                "[SetDpi] rejected — PID=0x{product_id:04X} ({device_id}) does not advertise DpiControl capability"
+            );
+            return false;
+        }
+
         let (txn_id, _) = lighting_params(&device.product_id);
-        println!("[SetDpi] PID=0x{product_id:04X} txn_id=0x{txn_id:02X}");
+        log::info!("[SetDpi] dispatching — PID=0x{product_id:04X} txn_id=0x{txn_id:02X}");
 
         let result = tokio::task::spawn_blocking(move || {
             let payload = crate::razer_protocol::build_set_dpi_payload(txn_id, x, y);
@@ -175,12 +189,19 @@ impl DeviceManager {
         .await;
 
         match result {
-            Ok(Ok(())) => println!("[SetDpi] USB transfer succeeded for {device_id}"),
-            Ok(Err(e)) => eprintln!("[SetDpi] USB transfer failed: {e:?}"),
-            Err(e) => eprintln!("[SetDpi] spawn_blocking panicked: {e:?}"),
+            Ok(Ok(())) => {
+                log::info!("[SetDpi] USB transfer succeeded for {device_id}");
+                true
+            }
+            Ok(Err(e)) => {
+                log::error!("[SetDpi] USB transfer failed for {device_id}: {e:?}");
+                false
+            }
+            Err(e) => {
+                log::error!("[SetDpi] spawn_blocking panicked for {device_id}: {e:?}");
+                false
+            }
         }
-
-        true
     }
 
     /// Emitted whenever a device's battery state changes.

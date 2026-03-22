@@ -139,6 +139,9 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
 }
 
 fn main() {
+    // Initialise structured logging; RUST_LOG controls verbosity (default: info).
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     // GTK must be initialised on the main thread before any GLib/AppIndicator
     // calls.  The entire GTK event loop runs here; tokio lives on a worker thread.
     gtk::init().expect("GTK initialisation failed");
