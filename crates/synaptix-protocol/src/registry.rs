@@ -39,6 +39,12 @@ pub struct DeviceProfile {
     pub device_type: DeviceType,
     /// Capabilities supported by this device.
     pub capabilities: Vec<DeviceCapability>,
+    /// USB interface number to claim for proprietary HID control transfers.
+    ///
+    /// Most Razer devices expose their control endpoint on interface `0`.
+    /// Composite devices (e.g. the Kraken V4 Pro Hub `0x0568`) route
+    /// proprietary commands through a higher-numbered interface (e.g. `3`).
+    pub control_interface: u8,
 }
 
 /// Looks up a [`DeviceProfile`] by USB product ID (PID).
@@ -1017,11 +1023,16 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
         capabilities.push(DeviceCapability::ThxSpatialAudio);
     }
 
+    // The Kraken V4 Pro Hub (0x0568) is a composite device; proprietary HID
+    // commands must be routed to interface 3 (not the default audio interface 0).
+    let control_interface: u8 = if product_id == 0x0568 { 3 } else { 0 };
+
     Some(DeviceProfile {
         name: name.to_string(),
         product_id,
         device_type,
         capabilities,
+        control_interface,
     })
 }
 
@@ -1103,5 +1114,16 @@ mod tests {
         let profile = get_device_profile(0x0568).expect("Kraken V4 Pro must be in registry");
         assert_eq!(profile.name, "Razer Kraken V4 Pro");
         assert_eq!(profile.device_type, DeviceType::Audio);
+        // Hub requires interface 3 for proprietary HID commands.
+        assert_eq!(profile.control_interface, 3);
+    }
+
+    #[test]
+    fn test_control_interface_defaults_to_zero() {
+        // Mice and keyboards must use interface 0 (the default).
+        let cobra = get_device_profile(0x00B0).expect("Cobra Pro must be in registry");
+        assert_eq!(cobra.control_interface, 0);
+        let bw = get_device_profile(0x024E).expect("BlackWidow V3 must be in registry");
+        assert_eq!(bw.control_interface, 0);
     }
 }

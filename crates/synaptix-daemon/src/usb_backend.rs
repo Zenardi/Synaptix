@@ -3,7 +3,7 @@ use crate::razer_protocol::{
     CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
-use synaptix_protocol::{BatteryState, ConnectionType};
+use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
 
 /// PID of the Cobra Pro wired interface (USB cable). Used to detect whether the
 /// cable is plugged in even when the active connection is via the dongle.
@@ -12,8 +12,19 @@ pub const COBRA_PRO_WIRED_PID: u16 = 0x00AF;
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Opens the first Razer device matching `product_id` and returns its handle
-/// with kernel driver detached and interface 0 claimed.
-fn open_razer_device(product_id: u16) -> rusb::Result<DeviceHandle<Context>> {
+/// (with kernel driver detached and the correct interface claimed) together with
+/// the `control_interface` index read from the device registry.
+///
+/// The interface index is also used as `wIndex` in subsequent HID control
+/// transfers — callers must forward it to `write_control` / `read_control`.
+fn open_razer_device(product_id: u16) -> rusb::Result<(DeviceHandle<Context>, u8)> {
+    // Look up the control interface from the registry; fall back to 0 for
+    // unknown devices so that ad-hoc calls (e.g. battery queries on a PID not
+    // yet registered) still work.
+    let control_interface = get_device_profile(product_id)
+        .map(|p| p.control_interface)
+        .unwrap_or(0);
+
     println!("[USB] Searching for Razer device with Product ID: 0x{product_id:04x}");
     let ctx = Context::new()?;
     let devices = ctx.devices()?;
@@ -50,12 +61,14 @@ fn open_razer_device(product_id: u16) -> rusb::Result<DeviceHandle<Context>> {
             );
         }
 
-        handle.claim_interface(0).inspect_err(|e| {
-            eprintln!("[USB] claim_interface(0) failed: {e:?}");
-        })?;
+        handle
+            .claim_interface(control_interface)
+            .inspect_err(|e| {
+                eprintln!("[USB] claim_interface({control_interface}) failed: {e:?}");
+            })?;
 
-        println!("[USB] Interface 0 claimed.");
-        return Ok(handle);
+        println!("[USB] Interface {control_interface} claimed.");
+        return Ok((handle, control_interface));
     }
 
     eprintln!("[USB] No Razer device with PID 0x{product_id:04x} found.");
@@ -91,15 +104,15 @@ pub fn detect_connected_pid(candidates: &[u16]) -> Option<u16> {
 /// bmRequestType = 0x21  (HOST→DEVICE | CLASS | INTERFACE)
 /// bRequest      = 0x09  (HID SET_REPORT)
 /// wValue        = 0x0300
-/// wIndex        = 0x00  (HID interface 0)
+/// wIndex        = <control_interface from registry>
 /// data          = 90-byte report
 /// ```
 pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rusb::Result<()> {
-    let handle = open_razer_device(product_id)?;
+    let (handle, iface) = open_razer_device(product_id)?;
     let timeout = std::time::Duration::from_millis(500);
 
     let n = handle
-        .write_control(0x21, 0x09, 0x0300, 0x00, payload, timeout)
+        .write_control(0x21, 0x09, 0x0300, iface as u16, payload, timeout)
         .inspect_err(|e| eprintln!("[USB] write_control failed: {e:?}"))?;
 
     println!("[USB] write_control returned {n} bytes (expected {REPORT_LEN}).");
@@ -179,7 +192,7 @@ pub fn query_battery(
         "[Battery] Querying battery for PID 0x{product_id:04x}, txn_id=0x{transaction_id:02x}, wait={wait_us}µs, conn={connection_type:?}"
     );
 
-    let handle = open_razer_device(product_id)?;
+    let (handle, _iface) = open_razer_device(product_id)?;
     let timeout = std::time::Duration::from_millis(500);
     let sleep = std::time::Duration::from_micros(wait_us);
 
@@ -199,7 +212,7 @@ pub fn query_battery(
                         "[Battery] Dongle returned 0%; trying wired interface (0x{COBRA_PRO_WIRED_PID:04x}) for level…"
                     );
                     match open_razer_device(COBRA_PRO_WIRED_PID)
-                        .and_then(|h| query_level(&h, transaction_id, &sleep, timeout))
+                        .and_then(|(h, _)| query_level(&h, transaction_id, &sleep, timeout))
                     {
                         Ok(wired_pct) if wired_pct > 0 => {
                             println!(
