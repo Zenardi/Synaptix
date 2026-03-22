@@ -234,36 +234,72 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             .await
             .ok();
 
-            // Immediately re-query battery after a connection change so the UI
-            // reflects the new charging state without waiting 60 s.
-            if new_pid != 0 {
-                let conn_for_query = new_conn.clone();
-                if let Ok(Ok(fresh_state)) = tokio::task::spawn_blocking(move || {
-                    usb_backend::query_battery(new_pid, txn_id, wait_us, &conn_for_query)
-                })
-                .await
-                {
-                    let state_json = serde_json::to_string(&fresh_state)
-                        .unwrap_or_else(|_| "\"Discharging\"".to_string());
-                    // Re-acquire the interface ref for the battery signal.
-                    if let Ok(bat_iface_ref) = conn_watch
-                        .object_server()
-                        .interface::<_, DeviceManager>("/org/synaptix/Daemon")
-                        .await
-                    {
+            // Immediately update battery state after a connection change.
+            //
+            // Wired: the Cobra Pro wired interface (0x00AF) returns 0 for battery
+            // level — the mouse runs off USB power and the firmware stops tracking
+            // the internal cell. We must NOT query USB here. Instead, read the
+            // last known level from DeviceManager and re-wrap it as Charging so
+            // the UI shows the correct percentage + charging badge.
+            //
+            // Dongle: query USB normally (cable-presence check inside query_battery
+            // handles the charging flag correctly).
+            //
+            // Bluetooth: no USB interface available — skip.
+            let fresh_state_opt: Option<BatteryState> = match &new_conn {
+                ConnectionType::Wired => {
+                    // Read current level from in-memory state without a USB query.
+                    let current_pct = {
+                        if let Ok(bat_ref) = conn_watch
+                            .object_server()
+                            .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                            .await
                         {
-                            let mut iface = bat_iface_ref.get_mut().await;
-                            iface.update_battery("cobra-pro", fresh_state.clone());
+                            let iface = bat_ref.get().await;
+                            iface.devices.get("cobra-pro").map(|d| match &d.battery_state {
+                                BatteryState::Charging(n) | BatteryState::Discharging(n) => *n,
+                                BatteryState::Full => 100,
+                            })
+                        } else {
+                            None
                         }
-                        DeviceManager::battery_changed(
-                            bat_iface_ref.signal_emitter(),
-                            "cobra-pro",
-                            &state_json,
-                        )
-                        .await
-                        .ok();
-                        log::info!("[Battery] Post-reconnect state: {fresh_state:?}");
+                    };
+                    current_pct.map(|pct| {
+                        if pct >= 100 { BatteryState::Full } else { BatteryState::Charging(pct) }
+                    })
+                }
+                ConnectionType::Dongle => {
+                    let conn_c = new_conn.clone();
+                    tokio::task::spawn_blocking(move || {
+                        usb_backend::query_battery(new_pid, txn_id, wait_us, &conn_c)
+                    })
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                }
+                ConnectionType::Bluetooth => None,
+            };
+
+            if let Some(fresh_state) = fresh_state_opt {
+                let state_json = serde_json::to_string(&fresh_state)
+                    .unwrap_or_else(|_| "\"Discharging\"".to_string());
+                if let Ok(bat_iface_ref) = conn_watch
+                    .object_server()
+                    .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                    .await
+                {
+                    {
+                        let mut iface = bat_iface_ref.get_mut().await;
+                        iface.update_battery("cobra-pro", fresh_state.clone());
                     }
+                    DeviceManager::battery_changed(
+                        bat_iface_ref.signal_emitter(),
+                        "cobra-pro",
+                        &state_json,
+                    )
+                    .await
+                    .ok();
+                    log::info!("[Battery] Post-reconnect state: {fresh_state:?}");
                 }
             }
         }

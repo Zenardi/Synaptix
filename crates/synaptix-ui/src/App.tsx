@@ -44,7 +44,11 @@ export function getBatteryLevel(state: BatteryState): number {
   return 0;
 }
 
-export function isCharging(state: BatteryState): boolean {
+export function isCharging(state: BatteryState, connectionType?: ConnectionType): boolean {
+  // A wired connection is always powered by USB — always charging by definition.
+  if (connectionType === "Wired") return true;
+  // Full means battery is topped up while on charge.
+  if (state === "Full") return true;
   return typeof state === "object" && "Charging" in state;
 }
 

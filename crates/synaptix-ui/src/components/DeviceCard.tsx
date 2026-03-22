@@ -70,7 +70,7 @@ interface Props {
 
 export default function DeviceCard({ device }: Props) {
   const level = getBatteryLevel(device.battery_state);
-  const charging = isCharging(device.battery_state);
+  const charging = isCharging(device.battery_state, device.connection_type);
   const targetOffset = CIRCUMFERENCE * (1 - level / 100);
 
   const [mode, setMode] = useState<EffectMode>("Static");
