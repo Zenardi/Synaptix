@@ -1,4 +1,5 @@
 use image::{ImageBuffer, Rgba};
+use std::collections::HashSet;
 use std::sync::mpsc::Receiver;
 use tray_icon::TrayIconBuilder;
 
@@ -8,6 +9,9 @@ pub struct TrayUpdate {
     pub percentage: u8,
     pub is_charging: bool,
 }
+
+/// Percentage thresholds that trigger a low-battery desktop notification.
+const LOW_BATTERY_THRESHOLDS: &[u8] = &[20, 15, 10, 5, 1];
 
 /// Generates a 32×32 RGBA battery icon filled proportionally.
 ///
@@ -80,6 +84,33 @@ pub fn generate_battery_icon(percentage: u8) -> tray_icon::Icon {
     tray_icon::Icon::from_rgba(img.into_raw(), W, H).expect("icon buffer is valid")
 }
 
+/// Sends a desktop notification for a low-battery threshold crossing.
+fn notify_low_battery(device_name: &str, percentage: u8) {
+    use notify_rust::{Notification, Urgency};
+
+    let urgency = if percentage <= 10 {
+        Urgency::Critical
+    } else {
+        Urgency::Normal
+    };
+    let icon = if percentage <= 10 {
+        "battery-empty"
+    } else {
+        "battery-caution"
+    };
+
+    if let Err(e) = Notification::new()
+        .summary(&format!("Low Battery — {device_name}"))
+        .body(&format!("Battery level is at {percentage}%."))
+        .icon(icon)
+        .urgency(urgency)
+        .timeout(notify_rust::Timeout::Milliseconds(8_000))
+        .show()
+    {
+        eprintln!("[Tray] Failed to send low-battery notification: {e:?}");
+    }
+}
+
 /// Initialises the AppIndicator tray icon and registers a GLib idle/timeout
 /// callback to drain battery updates arriving from the tokio polling loop.
 ///
@@ -88,10 +119,13 @@ pub fn generate_battery_icon(percentage: u8) -> tray_icon::Icon {
 pub fn start_tray(rx: Receiver<TrayUpdate>) {
     use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 
-    // libayatana-appindicator3 REQUIRES a menu to show the indicator.
-    // Without one the icon is silently suppressed by the AppIndicator protocol.
+    // A non-clickable label at the top of the menu showing current battery state.
+    let status_item = MenuItem::new("Synaptix – Scanning…", false, None);
     let quit_item = MenuItem::new("Quit Synaptix", true, None);
+
+    // libayatana-appindicator3 REQUIRES a menu to show the indicator.
     let menu = Menu::new();
+    menu.append(&status_item).ok();
     menu.append(&PredefinedMenuItem::separator()).ok();
     menu.append(&quit_item).ok();
 
@@ -106,10 +140,13 @@ pub fn start_tray(rx: Receiver<TrayUpdate>) {
 
     let quit_id = quit_item.id().clone();
 
+    // Track which thresholds have already fired to avoid spamming.
+    let mut notified: HashSet<u8> = HashSet::new();
+    let mut last_pct: Option<u8> = None;
+
     // Poll the channel every second on the GTK main thread.
-    // The closure captures both `tray` and `rx`; they live for the process lifetime.
     glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
-        // Handle menu events (e.g. "Quit").
+        // Handle menu events.
         if let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
             if event.id == quit_id {
                 gtk::main_quit();
@@ -117,11 +154,36 @@ pub fn start_tray(rx: Receiver<TrayUpdate>) {
         }
 
         while let Ok(update) = rx.try_recv() {
-            let icon = generate_battery_icon(update.percentage);
             let suffix = if update.is_charging { " ⚡" } else { "" };
-            let tooltip = format!("{}: {}%{}", update.device_name, update.percentage, suffix);
-            tray.set_icon(Some(icon)).ok();
-            tray.set_tooltip(Some(&tooltip)).ok();
+            let label = format!("{}: {}%{}", update.device_name, update.percentage, suffix);
+
+            // Update icon, tooltip, and the status label shown in the menu.
+            tray.set_icon(Some(generate_battery_icon(update.percentage)))
+                .ok();
+            tray.set_tooltip(Some(&label)).ok();
+            status_item.set_text(&label);
+
+            // ── Low-battery notifications (discharging only) ──────────────
+            if !update.is_charging {
+                let pct = update.percentage;
+                for &threshold in LOW_BATTERY_THRESHOLDS {
+                    // Fire when crossing a threshold downward for the first time.
+                    if pct <= threshold
+                        && !notified.contains(&threshold)
+                        && last_pct.map_or(true, |prev| prev > threshold)
+                    {
+                        notify_low_battery(&update.device_name, pct);
+                        notified.insert(threshold);
+                    }
+                }
+                // If battery has risen above a threshold, re-arm it.
+                notified.retain(|&t| pct <= t);
+            } else {
+                // Charging — reset so notifications re-arm for the next discharge.
+                notified.clear();
+            }
+
+            last_pct = Some(update.percentage);
         }
         glib::ControlFlow::Continue
     });

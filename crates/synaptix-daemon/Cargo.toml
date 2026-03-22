@@ -21,6 +21,7 @@ tray-icon = "0.14"
 image = "0.24"
 gtk = "0.18"
 glib = "0.18"
+notify-rust = "4"
 
 [dev-dependencies]
 futures-util = "0.3"
