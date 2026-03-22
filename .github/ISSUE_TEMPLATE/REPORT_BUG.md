@@ -32,3 +32,7 @@ To feed this bug into our automated pipeline, we need exact hardware and state d
 *Run `journalctl --user -u synaptix-daemon.service -n 50 --no-pager` and paste the output below.*
 ```text
 [Paste your logs here. Do not truncate them.]
+
+
+> [!NOTE]
+> Maintainer: To patch this, wrap this issue in the standard Milestone Prompt Template, assign the relevant crates/ file paths, and execute via Copilot.
