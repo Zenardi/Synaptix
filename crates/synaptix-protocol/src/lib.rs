@@ -1,3 +1,5 @@
+pub mod registry;
+
 use serde::{Deserialize, Serialize};
 
 /// All known Razer wireless/wired device product IDs (VID 0x1532).

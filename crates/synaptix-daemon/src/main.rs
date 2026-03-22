@@ -3,17 +3,22 @@ mod razer_protocol;
 mod usb_backend;
 
 use device_manager::DeviceManager;
-use synaptix_protocol::{BatteryState, RazerDevice, RazerProductId};
+use synaptix_protocol::{registry::get_device_profile, BatteryState, RazerDevice, RazerProductId};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut manager = DeviceManager::new();
 
-    // Seed the Cobra Pro as the active device.
+    // Seed the Cobra Pro as the active device — resolve name from the registry.
+    let cobra_pid = RazerProductId::CobraProWireless.usb_pid();
+    let cobra_name = get_device_profile(cobra_pid)
+        .map(|p| p.name)
+        .unwrap_or_else(|| "Razer Cobra Pro (Wireless)".to_string());
+
     manager.add_device(
         "cobra-pro".to_string(),
         RazerDevice {
-            name: "Razer Cobra Pro".to_string(),
+            name: cobra_name,
             product_id: RazerProductId::CobraProWireless,
             battery_state: BatteryState::Discharging(75),
         },
