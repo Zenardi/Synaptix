@@ -160,69 +160,91 @@ async fn set_device_dpi(device_id: String, dpi: u16) -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Background task: subscribes to the daemon's D-Bus signals and forwards
-/// each event to the React frontend via Tauri's event system.
-///
-/// Handles both `BatteryChanged` and `ConnectionChanged` signals.
-async fn listen_for_signals(
+/// Background task: subscribes to the daemon's `BatteryChanged` D-Bus signal
+/// and forwards each event to the React frontend via Tauri's event system.
+async fn listen_for_battery_signals(
     app: AppHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let conn = zbus::Connection::session().await?;
-
-    // Best-effort: wake the daemon before we try to subscribe.
     ensure_daemon_running(&conn).await;
-
     let proxy = SynaptixDaemonProxy::new(&conn).await?;
 
-    let (mut battery_stream, mut connection_stream) =
-        match tokio::try_join!(proxy.receive_battery_changed(), proxy.receive_connection_changed())
-        {
-            Ok(streams) => streams,
-            Err(e) => {
-                let is_absent = matches!(
-                    &e,
-                    zbus::Error::MethodError(name, ..)
-                        if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
-                );
-                if is_absent {
-                    let _ = std::process::Command::new("systemctl")
-                        .args(["--user", "start", "synaptix-daemon.service"])
-                        .status();
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    tokio::try_join!(
-                        proxy.receive_battery_changed(),
-                        proxy.receive_connection_changed()
-                    )?
-                } else {
-                    return Err(Box::new(e));
-                }
+    let mut stream = match proxy.receive_battery_changed().await {
+        Ok(s) => s,
+        Err(e) => {
+            let is_absent = matches!(
+                &e,
+                zbus::Error::MethodError(name, ..)
+                    if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
+            );
+            if is_absent {
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "start", "synaptix-daemon.service"])
+                    .status();
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                proxy.receive_battery_changed().await?
+            } else {
+                return Err(Box::new(e));
             }
-        };
+        }
+    };
 
-    loop {
-        tokio::select! {
-            Some(signal) = battery_stream.next() => {
-                if let Ok(args) = signal.args() {
-                    let device_id = args.device_id().to_string();
-                    let new_state_json = args.new_state_json().to_string();
-                    if let Ok(battery_state) = serde_json::from_str::<BatteryState>(&new_state_json) {
-                        app.emit("device-battery-updated", BatteryUpdatePayload { device_id, battery_state }).ok();
-                    }
-                }
+    while let Some(signal) = stream.next().await {
+        if let Ok(args) = signal.args() {
+            let device_id = args.device_id().to_string();
+            let new_state_json = args.new_state_json().to_string();
+            if let Ok(battery_state) = serde_json::from_str::<BatteryState>(&new_state_json) {
+                app.emit("device-battery-updated", BatteryUpdatePayload { device_id, battery_state }).ok();
             }
-            Some(signal) = connection_stream.next() => {
-                if let Ok(args) = signal.args() {
-                    let device_id = args.device_id().to_string();
-                    let ct_json = args.connection_type_json().to_string();
-                    if let Ok(connection_type) = serde_json::from_str::<synaptix_protocol::ConnectionType>(&ct_json) {
-                        app.emit("device-connection-changed", ConnectionUpdatePayload { device_id, connection_type }).ok();
-                    }
-                }
-            }
-            else => break,
         }
     }
+    Ok(())
+}
 
+/// Background task: subscribes to the daemon's `ConnectionChanged` D-Bus signal
+/// and forwards each event to the React frontend via Tauri's event system.
+async fn listen_for_connection_signals(
+    app: AppHandle,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let conn = zbus::Connection::session().await?;
+    ensure_daemon_running(&conn).await;
+    let proxy = SynaptixDaemonProxy::new(&conn).await?;
+
+    let mut stream = match proxy.receive_connection_changed().await {
+        Ok(s) => s,
+        Err(e) => {
+            let is_absent = matches!(
+                &e,
+                zbus::Error::MethodError(name, ..)
+                    if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
+            );
+            if is_absent {
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "start", "synaptix-daemon.service"])
+                    .status();
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                proxy.receive_connection_changed().await?
+            } else {
+                return Err(Box::new(e));
+            }
+        }
+    };
+
+    while let Some(signal) = stream.next().await {
+        if let Ok(args) = signal.args() {
+            let device_id = args.device_id().to_string();
+            let ct_json = args.connection_type_json().to_string();
+            if let Ok(connection_type) =
+                serde_json::from_str::<synaptix_protocol::ConnectionType>(&ct_json)
+            {
+                app.emit(
+                    "device-connection-changed",
+                    ConnectionUpdatePayload { device_id, connection_type },
+                )
+                .ok();
+            }
+        }
+    }
     Ok(())
 }
 
@@ -242,10 +264,16 @@ pub fn run() {
             }
 
             let handle = app.handle().clone();
-            // Spawn the D-Bus signal listener for the lifetime of the app.
+            let handle2 = app.handle().clone();
+            // Spawn both D-Bus signal listeners independently for the app lifetime.
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = listen_for_signals(handle).await {
-                    eprintln!("D-Bus signal listener failed: {e}");
+                if let Err(e) = listen_for_battery_signals(handle).await {
+                    eprintln!("Battery signal listener failed: {e}");
+                }
+            });
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = listen_for_connection_signals(handle2).await {
+                    eprintln!("Connection signal listener failed: {e}");
                 }
             });
             Ok(())
