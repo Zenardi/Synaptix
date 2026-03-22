@@ -111,6 +111,17 @@ pub fn build_static_color_payload(
     buf
 }
 
+/// Extracts the battery percentage from a 90-byte Razer HID GET_REPORT response.
+///
+/// `response[9]` (`arguments[1]`) holds a raw 0–255 level from the firmware.
+/// This maps linearly to 0–100 % using integer arithmetic.
+///
+/// Used by `usb_backend::query_battery` and by the TDD test suite.
+pub fn parse_battery_response(response: &[u8; REPORT_LEN]) -> u8 {
+    let raw = response[9];
+    ((raw as u16 * 100) / 255) as u8
+}
+
 // ── Battery / Power queries ───────────────────────────────────────────────────
 
 /// Command class for battery and power management queries.
@@ -408,5 +419,36 @@ mod tests {
         assert_eq!(payload[15], 0x00);
         assert_eq!(payload[16], 0x00);
         assert_eq!(payload[88], 0x0B, "CRC mismatch");
+    }
+
+    // ── Battery payload + parse round-trip ────────────────────────────────────
+
+    /// Verifies that `build_battery_query_payload` generates a correct HID
+    /// report AND that `parse_battery_response` correctly converts the raw
+    /// 0–255 hardware value at index 9 into a 0–100 % integer.
+    #[test]
+    fn test_battery_payload_and_parse() {
+        // ── Payload generation ────────────────────────────────────────────
+        let payload = build_battery_query_payload(TRANSACTION_ID_COBRA);
+        assert_eq!(payload[5], 0x02, "data_size must be 2");
+        assert_eq!(payload[6], CMD_CLASS_BATTERY, "command class must be 0x07");
+        assert_eq!(payload[7], CMD_ID_BATTERY_LEVEL, "command id must be 0x80");
+
+        // ── Parse: 255 raw → 100 % ────────────────────────────────────────
+        let mut response = [0u8; REPORT_LEN];
+        response[9] = 255;
+        assert_eq!(parse_battery_response(&response), 100);
+
+        // ── Parse: 128 raw → 50 % (integer: 128*100/255 = 50) ────────────
+        response[9] = 128;
+        assert_eq!(parse_battery_response(&response), 50);
+
+        // ── Parse: 0 raw → 0 % ───────────────────────────────────────────
+        response[9] = 0;
+        assert_eq!(parse_battery_response(&response), 0);
+
+        // ── Parse: 191 raw → 74 % (191*100/255 = 74) ─────────────────────
+        response[9] = 191;
+        assert_eq!(parse_battery_response(&response), 74);
     }
 }
