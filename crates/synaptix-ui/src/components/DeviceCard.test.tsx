@@ -44,6 +44,7 @@ const INITIAL_DEVICE: RazerDevice = {
   product_id: "DeathAdderV2Pro",
   battery_state: { Discharging: 75 },
   capabilities: [],
+  connection_type: "Wired",
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

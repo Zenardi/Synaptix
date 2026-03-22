@@ -13,12 +13,15 @@ export type BatteryState =
   | "Full";
 
 // Matches the DeviceEntry struct returned by the Tauri `get_razer_devices` command.
+export type ConnectionType = "Wired" | "Dongle" | "Bluetooth";
+
 export interface RazerDevice {
   device_id: string;
   name: string;
   product_id: unknown;
   battery_state: BatteryState;
   capabilities: (string | Record<string, unknown>)[];
+  connection_type: ConnectionType;
 }
 
 // Matches BatteryUpdatePayload emitted by the Tauri signal listener.

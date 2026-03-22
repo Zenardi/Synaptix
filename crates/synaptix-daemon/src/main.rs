@@ -5,7 +5,46 @@ mod tray;
 mod usb_backend;
 
 use device_manager::DeviceManager;
-use synaptix_protocol::{registry::get_device_profile, BatteryState, RazerDevice, RazerProductId};
+use synaptix_protocol::{
+    registry::get_device_profile,
+    BatteryState, ConnectionType, RazerDevice, RazerProductId,
+};
+
+// PIDs for the Cobra Pro, ordered wired-first so we prefer the cable
+// connection when both happen to be enumerated simultaneously.
+const COBRA_PRO_PIDS: &[(u16, ConnectionType)] = &[
+    (0x00AF, ConnectionType::Wired),   // USB cable
+    (0x00B0, ConnectionType::Dongle),  // HyperSpeed dongle
+];
+
+/// Probe USB for the first Cobra Pro PID that is currently attached and
+/// return `(pid, product_id_enum, connection_type, name)`.
+fn detect_cobra_pro() -> (u16, RazerProductId, ConnectionType, String) {
+    let candidate_pids: Vec<u16> = COBRA_PRO_PIDS.iter().map(|(p, _)| *p).collect();
+    let found_pid = usb_backend::detect_connected_pid(&candidate_pids);
+
+    let (pid, conn_type) = found_pid
+        .and_then(|p| {
+            COBRA_PRO_PIDS
+                .iter()
+                .find(|(cp, _)| *cp == p)
+                .map(|(cp, ct)| (*cp, ct.clone()))
+        })
+        .unwrap_or_else(|| {
+            // Nothing on USB — assume Bluetooth (not enumerable via rusb).
+            (0x00B0, ConnectionType::Bluetooth)
+        });
+
+    let product_id = match pid {
+        0x00AF => RazerProductId::CobraProWired,
+        _ => RazerProductId::CobraProWireless,
+    };
+    let name = get_device_profile(pid)
+        .map(|p| p.name)
+        .unwrap_or_else(|| "Razer Cobra Pro".to_string());
+
+    (pid, product_id, conn_type, name)
+}
 use tray::TrayUpdate;
 
 /// Converts a `BatteryState` into a `(percentage, is_charging)` pair for the tray.
@@ -22,26 +61,31 @@ fn battery_to_pct(state: &BatteryState) -> (u8, bool) {
 /// Sends `TrayUpdate` messages over `tx` whenever the battery state changes so
 /// the GTK tray icon on the main thread can update without blocking.
 async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
-    let cobra_pid = RazerProductId::CobraProWireless.usb_pid();
     let txn_id = razer_protocol::TRANSACTION_ID_COBRA;
     let wait_us = razer_protocol::WAIT_NEW_RECEIVER_US;
 
-    let cobra_name = get_device_profile(cobra_pid)
-        .map(|p| p.name)
-        .unwrap_or_else(|| "Razer Cobra Pro (Wireless)".to_string());
+    // Detect which Cobra Pro PID is on the bus right now.
+    let (mut cobra_pid, mut cobra_product_id, mut cobra_conn, mut cobra_name) =
+        tokio::task::spawn_blocking(detect_cobra_pro)
+            .await
+            .unwrap_or_else(|_| (0x00B0, RazerProductId::CobraProWireless, ConnectionType::Bluetooth, "Razer Cobra Pro".to_string()));
+
+    log::info!("[Detect] Cobra Pro on USB: PID=0x{cobra_pid:04X} connection={}", cobra_conn.label());
 
     // Query real battery state on startup so the tray shows real data immediately.
-    let initial_battery =
-        tokio::task::spawn_blocking(move || usb_backend::query_battery(cobra_pid, txn_id, wait_us))
+    let initial_battery = {
+        let pid = cobra_pid;
+        tokio::task::spawn_blocking(move || usb_backend::query_battery(pid, txn_id, wait_us))
             .await
             .ok()
             .and_then(|r| r.ok())
             .unwrap_or_else(|| {
-                eprintln!("[Battery] Startup query failed — defaulting to 0 %.");
+                log::warn!("[Battery] Startup query failed — defaulting to 0 %.");
                 BatteryState::Discharging(0)
-            });
+            })
+    };
 
-    println!("[Battery] Startup state: {initial_battery:?}");
+    log::info!("[Battery] Startup state: {initial_battery:?}");
 
     // Push the initial reading to the tray immediately.
     let (pct, charging) = battery_to_pct(&initial_battery);
@@ -60,9 +104,10 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         "cobra-pro".to_string(),
         RazerDevice {
             name: cobra_name.clone(),
-            product_id: RazerProductId::CobraProWireless,
+            product_id: cobra_product_id.clone(),
             battery_state: initial_battery.clone(),
             capabilities: cobra_capabilities,
+            connection_type: cobra_conn.clone(),
         },
     );
 
@@ -76,34 +121,67 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         Ok(builder) => match builder.build().await {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[Daemon] D-Bus connection failed: {e:?}");
+                log::error!("[Daemon] D-Bus connection failed: {e:?}");
                 return;
             }
         },
         Err(e) => {
-            eprintln!("[Daemon] D-Bus builder failed: {e:?}");
+            log::error!("[Daemon] D-Bus builder failed: {e:?}");
             return;
         }
     };
 
-    println!("Synaptix Daemon running on org.synaptix.Daemon at /org/synaptix/Daemon");
+    log::info!("Synaptix Daemon running on org.synaptix.Daemon at /org/synaptix/Daemon");
 
     let mut last_emitted: Option<BatteryState> = Some(initial_battery);
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
+        // Re-detect the connection type — user may have switched from dongle to cable.
+        let (new_pid, new_product_id, new_conn, new_name) =
+            tokio::task::spawn_blocking(detect_cobra_pro)
+                .await
+                .unwrap_or_else(|_| (cobra_pid, cobra_product_id.clone(), cobra_conn.clone(), cobra_name.clone()));
+
+        if new_pid != cobra_pid || new_conn != cobra_conn {
+            log::info!(
+                "[Detect] Connection changed: {} → {} (PID 0x{:04X} → 0x{:04X})",
+                cobra_conn.label(), new_conn.label(), cobra_pid, new_pid
+            );
+            cobra_pid = new_pid;
+            cobra_product_id = new_product_id;
+            cobra_conn = new_conn.clone();
+            cobra_name = new_name;
+
+            let iface_ref = conn
+                .object_server()
+                .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                .await
+                .expect("DeviceManager interface must be registered");
+            {
+                let mut iface = iface_ref.get_mut().await;
+                iface.update_connection(
+                    "cobra-pro",
+                    cobra_name.clone(),
+                    cobra_product_id.clone(),
+                    new_conn,
+                );
+            }
+        }
+
+        let pid = cobra_pid;
         let new_state = match tokio::task::spawn_blocking(move || {
-            usb_backend::query_battery(cobra_pid, txn_id, wait_us)
+            usb_backend::query_battery(pid, txn_id, wait_us)
         })
         .await
         {
             Ok(Ok(state)) => state,
             Ok(Err(e)) => {
-                eprintln!("[Battery] USB query failed: {e:?} — skipping.");
+                log::warn!("[Battery] USB query failed: {e:?} — skipping.");
                 continue;
             }
             Err(e) => {
-                eprintln!("[Battery] spawn_blocking panicked: {e:?} — skipping.");
+                log::warn!("[Battery] spawn_blocking panicked: {e:?} — skipping.");
                 continue;
             }
         };
@@ -119,7 +197,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
 
         // Only emit the D-Bus signal when the state actually changes.
         if last_emitted.as_ref() == Some(&new_state) {
-            println!("[Battery] No change ({new_state:?}), skipping D-Bus signal.");
+            log::debug!("[Battery] No change ({new_state:?}), skipping D-Bus signal.");
             continue;
         }
         last_emitted = Some(new_state.clone());

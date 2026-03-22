@@ -59,6 +59,27 @@ fn open_razer_device(product_id: u16) -> rusb::Result<DeviceHandle<Context>> {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Scans the USB bus for the first PID in `candidates` (tried in order) that
+/// is currently attached with Razer VID `0x1532`.
+///
+/// Returns the matching PID, or `None` if no candidate is present.
+/// Used at startup and in the polling loop to detect connection-type changes
+/// (wired vs HyperSpeed dongle).
+pub fn detect_connected_pid(candidates: &[u16]) -> Option<u16> {
+    let ctx = Context::new().ok()?;
+    let devices = ctx.devices().ok()?;
+    for pid in candidates {
+        for device in devices.iter() {
+            if let Ok(desc) = device.device_descriptor() {
+                if desc.vendor_id() == RAZER_VID && desc.product_id() == *pid {
+                    return Some(*pid);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Sends a 90-byte HID SET_REPORT control transfer to a Razer device.
 ///
 /// ```text

@@ -32,6 +32,8 @@ pub struct DeviceEntry {
     pub product_id: serde_json::Value,
     pub battery_state: BatteryState,
     pub capabilities: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub connection_type: synaptix_protocol::ConnectionType,
 }
 
 /// Payload carried by the Tauri `device-battery-updated` event.

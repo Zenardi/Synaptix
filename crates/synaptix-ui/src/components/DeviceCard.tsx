@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
-import type { RazerDevice } from "../App";
+import type { RazerDevice, ConnectionType } from "../App";
 import { getBatteryLevel, isCharging } from "../App";
 import DpiControl from "./DpiControl";
 
@@ -20,6 +20,12 @@ const PRESETS = [
   { label: "Orange",      hex: "#ff6d00" },
   { label: "White",       hex: "#ffffff" },
 ];
+
+const CONNECTION_META: Record<ConnectionType, { icon: string; label: string; color: string }> = {
+  Wired:     { icon: "⚡", label: "Wired",      color: "text-[#44d62c]" },
+  Dongle:    { icon: "📡", label: "USB Dongle", color: "text-blue-400"  },
+  Bluetooth: { icon: "🔵", label: "Bluetooth",  color: "text-sky-400"   },
+};
 
 type EffectMode = "Static" | "Breathing" | "Spectrum";
 
@@ -157,6 +163,17 @@ export default function DeviceCard({ device }: Props) {
       <p className="text-sm text-gray-300 font-medium text-center leading-snug">
         {device.name}
       </p>
+
+      {/* ── Connection type badge ─────────────────────────────────────── */}
+      {(() => {
+        const meta = CONNECTION_META[device.connection_type] ?? CONNECTION_META.Bluetooth;
+        return (
+          <span className={`text-[10px] font-semibold tracking-widest uppercase flex items-center gap-1 ${meta.color}`}>
+            <span aria-hidden="true">{meta.icon}</span>
+            {meta.label}
+          </span>
+        );
+      })()}
 
       {/* ── Lighting section ─────────────────────────────────────────── */}
       <div className="w-full border-t border-white/5 pt-4 flex flex-col gap-3">

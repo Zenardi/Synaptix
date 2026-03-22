@@ -55,6 +55,22 @@ impl DeviceManager {
         }
     }
 
+    /// Updates the name, product ID, and connection type for a device whose
+    /// physical connection has changed (e.g. dongle → cable).
+    pub fn update_connection(
+        &mut self,
+        id: &str,
+        name: String,
+        product_id: synaptix_protocol::RazerProductId,
+        connection_type: synaptix_protocol::ConnectionType,
+    ) {
+        if let Some(device) = self.devices.get_mut(id) {
+            device.name = name;
+            device.product_id = product_id;
+            device.connection_type = connection_type;
+        }
+    }
+
     #[allow(dead_code)]
     pub fn update_lighting(&mut self, id: &str, effect: LightingEffect) {
         if self.devices.contains_key(id) {
