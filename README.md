@@ -330,7 +330,9 @@ Verify membership with `groups`. If `plugdev` is listed, you can run the daemon 
 
 ## Supported Devices
 
-> Only devices in the **Hardware-Tested** table have been verified on physical hardware. The **Registry Coverage** table lists all devices whose USB PIDs are mapped in `synaptix-protocol::registry` — these will be auto-identified by the daemon, but lighting/battery commands require their protocol parameters to also be wired into the daemon.
+Synaptix supports **209+ Razer peripherals** across mice and keyboards. When a supported device is plugged in, the daemon automatically identifies it via USB PID, exposes it on D-Bus, and the UI displays it with its correct name and capabilities.
+
+> **Full lighting and battery control** is currently implemented and hardware-tested for a subset of devices (see table below). For all other supported devices, identification and D-Bus exposure work correctly — extended control features will be enabled as protocol parameters are mapped and contributors test on real hardware.
 
 ### Hardware-Tested
 
@@ -343,9 +345,9 @@ Verify membership with `groups`. If `plugdev` is listed, you can run the daemon 
 
 ---
 
-### Registry Coverage
+### Full Device Coverage
 
-The device registry maps **209+ PIDs** across mice and keyboards for automatic USB identification.
+All 209+ devices below are recognized by the daemon out of the box.
 
 #### Mice (103 PIDs)
 
