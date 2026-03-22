@@ -1,6 +1,6 @@
 use futures_util::StreamExt;
 use synaptix_protocol::{BatteryState, LightingEffect};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Proxy for the `org.synaptix.Daemon` D-Bus interface.
 /// Strictly a consumer — no hardware logic lives here.
@@ -107,6 +107,17 @@ async fn listen_for_signals(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            // Set the window icon at runtime so the GNOME/X11 taskbar shows the
+            // Synaptix icon instead of the default cog. bundle.icon only affects
+            // the packaged .deb — this is needed for the running process.
+            #[cfg(target_os = "linux")]
+            if let (Some(window), Some(icon)) = (
+                app.get_webview_window("main"),
+                app.default_window_icon().cloned(),
+            ) {
+                window.set_icon(icon).expect("failed to set window icon");
+            }
+
             let handle = app.handle().clone();
             // Spawn the D-Bus signal listener for the lifetime of the app.
             tauri::async_runtime::spawn(async move {
