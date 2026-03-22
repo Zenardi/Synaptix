@@ -99,6 +99,30 @@ impl BatteryState {
     }
 }
 
+/// How the device is physically connected to the host.
+///
+/// `Bluetooth` is reserved for future use — Bluetooth HID devices do not
+/// appear in `rusb`; when the daemon detects neither wired nor dongle PID on
+/// the USB bus it leaves the device as `Bluetooth`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ConnectionType {
+    Wired,
+    Dongle,
+    #[default]
+    Bluetooth,
+}
+
+impl ConnectionType {
+    /// Human-readable label shown in the UI.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ConnectionType::Wired => "Wired",
+            ConnectionType::Dongle => "USB Dongle",
+            ConnectionType::Bluetooth => "Bluetooth",
+        }
+    }
+}
+
 /// A Razer device as represented on the D-Bus interface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RazerDevice {
@@ -106,6 +130,8 @@ pub struct RazerDevice {
     pub product_id: RazerProductId,
     pub battery_state: BatteryState,
     pub capabilities: Vec<registry::DeviceCapability>,
+    #[serde(default)]
+    pub connection_type: ConnectionType,
 }
 
 #[cfg(test)]
@@ -119,6 +145,7 @@ mod tests {
             product_id: RazerProductId::DeathAdderV2Pro,
             battery_state: BatteryState::Discharging(75),
             capabilities: vec![],
+            connection_type: ConnectionType::Wired,
         };
 
         let json = serde_json::to_string(&device).expect("serialization failed");

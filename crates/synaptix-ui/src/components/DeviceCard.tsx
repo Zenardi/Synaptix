@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
-import type { RazerDevice } from "../App";
+import type { RazerDevice, ConnectionType } from "../App";
 import { getBatteryLevel, isCharging } from "../App";
 import DpiControl from "./DpiControl";
 
@@ -21,7 +21,22 @@ const PRESETS = [
   { label: "White",       hex: "#ffffff" },
 ];
 
+const CONNECTION_META: Record<ConnectionType, { icon: string; label: string; color: string }> = {
+  Wired:     { icon: "⚡", label: "Wired",      color: "text-[#44d62c]" },
+  Dongle:    { icon: "📡", label: "USB Dongle", color: "text-blue-400"  },
+  Bluetooth: { icon: "🔵", label: "Bluetooth",  color: "text-sky-400"   },
+};
+
 type EffectMode = "Static" | "Breathing" | "Spectrum";
+
+interface DeviceSettings {
+  lighting?: { Static?: [number, number, number]; Breathing?: [number, number, number] } | "Spectrum";
+  dpi?: number;
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
 
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
@@ -55,11 +70,39 @@ interface Props {
 
 export default function DeviceCard({ device }: Props) {
   const level = getBatteryLevel(device.battery_state);
-  const charging = isCharging(device.battery_state);
+  const charging = isCharging(device.battery_state, device.connection_type);
   const targetOffset = CIRCUMFERENCE * (1 - level / 100);
 
   const [mode, setMode] = useState<EffectMode>("Static");
   const [selectedColor, setSelectedColor] = useState("#44d62c");
+
+  // Hydrate lighting state from the daemon on mount so the UI reflects
+  // the last saved colour/effect rather than always defaulting to green Static.
+  useEffect(() => {
+    invoke<string>("get_device_state", { deviceId: device.device_id })
+      .then((json) => {
+        const settings: DeviceSettings = JSON.parse(json);
+        if (!settings.lighting) return;
+        if (settings.lighting === "Spectrum") {
+          setMode("Spectrum");
+          return;
+        }
+        if (typeof settings.lighting === "object") {
+          if ("Static" in settings.lighting && settings.lighting.Static) {
+            const [r, g, b] = settings.lighting.Static;
+            setMode("Static");
+            setSelectedColor(rgbToHex(r, g, b));
+          } else if ("Breathing" in settings.lighting && settings.lighting.Breathing) {
+            const [r, g, b] = settings.lighting.Breathing;
+            setMode("Breathing");
+            setSelectedColor(rgbToHex(r, g, b));
+          }
+        }
+      })
+      .catch(() => {
+        // No saved lighting — keep defaults.
+      });
+  }, [device.device_id]);
 
   const MODES: EffectMode[] = ["Static", "Breathing", "Spectrum"];
   const showColorPicker = mode !== "Spectrum";
@@ -93,14 +136,27 @@ export default function DeviceCard({ device }: Props) {
           <motion.circle
             cx="50" cy="50" r={RADIUS}
             fill="none"
-            stroke="#44d62c"
+            stroke={charging ? "#44d62c" : "#44d62c"}
             strokeWidth={STROKE_WIDTH}
             strokeLinecap="round"
             strokeDasharray={CIRCUMFERENCE}
             initial={{ strokeDashoffset: CIRCUMFERENCE }}
-            animate={{ strokeDashoffset: targetOffset }}
-            transition={{ duration: 1.5, ease: "easeOut" }}
-            style={{ filter: "drop-shadow(0 0 6px #44d62c)" }}
+            animate={{
+              strokeDashoffset: targetOffset,
+              // Pulse the glow while charging.
+              filter: charging
+                ? [
+                    "drop-shadow(0 0 4px #44d62c)",
+                    "drop-shadow(0 0 12px #44d62c)",
+                    "drop-shadow(0 0 4px #44d62c)",
+                  ]
+                : "drop-shadow(0 0 6px #44d62c)",
+            }}
+            transition={
+              charging
+                ? { strokeDashoffset: { duration: 1.5, ease: "easeOut" }, filter: { duration: 1.8, repeat: Infinity, ease: "easeInOut" } }
+                : { duration: 1.5, ease: "easeOut" }
+            }
           />
         </svg>
 
@@ -120,6 +176,38 @@ export default function DeviceCard({ device }: Props) {
       <p className="text-sm text-gray-300 font-medium text-center leading-snug">
         {device.name}
       </p>
+
+      {/* ── Connection + charging badges ──────────────────────────────── */}
+      <div className="flex items-center gap-2 flex-wrap justify-center">
+        {(() => {
+          const meta = CONNECTION_META[device.connection_type] ?? CONNECTION_META.Bluetooth;
+          return (
+            <span className={`text-[10px] font-semibold tracking-widest uppercase flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 ${meta.color}`}>
+              <span aria-hidden="true">{meta.icon}</span>
+              {meta.label}
+            </span>
+          );
+        })()}
+
+        {/* Separate charging badge — visible whenever the cable is supplying power,
+            even when the active gaming connection is the wireless dongle. */}
+        <AnimatePresence>
+          {charging && (
+            <motion.span
+              key="charging-badge"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              transition={{ duration: 0.2 }}
+              className="text-[10px] font-semibold tracking-widest uppercase flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#44d62c]/10 text-[#44d62c] border border-[#44d62c]/30"
+              aria-label="USB charging active"
+            >
+              <span aria-hidden="true">⚡</span>
+              Charging
+            </motion.span>
+          )}
+        </AnimatePresence>
+      </div>
 
       {/* ── Lighting section ─────────────────────────────────────────── */}
       <div className="w-full border-t border-white/5 pt-4 flex flex-col gap-3">

@@ -1,6 +1,6 @@
 [package]
 name = "synaptix-ui"
-description = "Tauri-based GUI dashboard for Synaptix — D-Bus client and React/TypeScript frontend."
+description = "Tauri-based GUI dashboard for Synaptix. D-Bus client and React/TypeScript frontend. Synaptix is an open-source app that is a Razer Synapse alternative since Razer Inc. did not support Linux. Support this app at https://github.com/Zenardi/Synaptix"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

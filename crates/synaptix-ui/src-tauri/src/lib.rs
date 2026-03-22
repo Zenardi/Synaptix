@@ -12,6 +12,8 @@ use tauri::{AppHandle, Emitter, Manager};
 trait SynaptixDaemon {
     fn get_devices(&self) -> zbus::Result<Vec<String>>;
 
+    fn get_device_state(&self, device_id: &str) -> zbus::Result<String>;
+
     fn set_lighting(&self, device_id: &str, effect_json: &str) -> zbus::Result<bool>;
 
     fn set_dpi(&self, device_id: &str, x: u16, y: u16) -> zbus::Result<bool>;
@@ -19,6 +21,10 @@ trait SynaptixDaemon {
     /// Signal emitted by the daemon whenever a device's battery state changes.
     #[zbus(signal)]
     fn battery_changed(&self, device_id: &str, new_state_json: &str) -> zbus::Result<()>;
+
+    /// Signal emitted whenever a device's physical connection type changes.
+    #[zbus(signal)]
+    fn connection_changed(&self, device_id: &str, connection_type_json: &str) -> zbus::Result<()>;
 }
 
 /// Flat representation returned to the React frontend. The daemon injects
@@ -30,6 +36,8 @@ pub struct DeviceEntry {
     pub product_id: serde_json::Value,
     pub battery_state: BatteryState,
     pub capabilities: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub connection_type: synaptix_protocol::ConnectionType,
 }
 
 /// Payload carried by the Tauri `device-battery-updated` event.
@@ -39,12 +47,53 @@ struct BatteryUpdatePayload {
     battery_state: BatteryState,
 }
 
+/// Payload carried by the Tauri `device-connection-changed` event.
+#[derive(Clone, serde::Serialize)]
+struct ConnectionUpdatePayload {
+    device_id: String,
+    connection_type: synaptix_protocol::ConnectionType,
+}
+
+/// Returns `true` if `org.synaptix.Daemon` has a registered name on the
+/// session bus right now.
+async fn daemon_is_on_bus(conn: &zbus::Connection) -> bool {
+    conn.call_method(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus"),
+        "GetNameOwner",
+        &("org.synaptix.Daemon",),
+    )
+    .await
+    .is_ok()
+}
+
+/// If the daemon is absent, attempts to start the systemd user service and
+/// waits 500 ms for it to bind to D-Bus. Idempotent — safe to call multiple
+/// times or when the daemon is already running.
+async fn ensure_daemon_running(conn: &zbus::Connection) {
+    if daemon_is_on_bus(conn).await {
+        return;
+    }
+
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "start", "synaptix-daemon.service"])
+        .status();
+
+    // Give the daemon time to register its well-known name on the bus.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+}
+
 /// Tauri IPC command: fetches the current device list from the daemon.
 #[tauri::command]
 async fn get_razer_devices() -> Result<Vec<DeviceEntry>, String> {
     let conn = zbus::Connection::session()
         .await
         .map_err(|e| e.to_string())?;
+
+    // Auto-start the daemon if it is not yet running (e.g., after a fresh
+    // .deb install where the user service has been enabled but not started).
+    ensure_daemon_running(&conn).await;
 
     let proxy = SynaptixDaemonProxy::new(&conn)
         .await
@@ -58,6 +107,24 @@ async fn get_razer_devices() -> Result<Vec<DeviceEntry>, String> {
         .collect();
 
     Ok(entries)
+}
+
+/// Tauri IPC command: fetches persisted settings (DPI, lighting) for a device.
+///
+/// Returns a JSON string matching `DeviceSettings` — `{}` if nothing saved yet.
+/// The React frontend calls this on mount to hydrate its local state.
+#[tauri::command]
+async fn get_device_state(device_id: String) -> Result<String, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| e.to_string())?;
+    let proxy = SynaptixDaemonProxy::new(&conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    proxy
+        .get_device_state(&device_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Tauri IPC command: applies a lighting effect to a device via the daemon.
@@ -95,29 +162,99 @@ async fn set_device_dpi(device_id: String, dpi: u16) -> Result<bool, String> {
 
 /// Background task: subscribes to the daemon's `BatteryChanged` D-Bus signal
 /// and forwards each event to the React frontend via Tauri's event system.
-async fn listen_for_signals(
+async fn listen_for_battery_signals(
     app: AppHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let conn = zbus::Connection::session().await?;
+    ensure_daemon_running(&conn).await;
     let proxy = SynaptixDaemonProxy::new(&conn).await?;
-    let mut stream = proxy.receive_battery_changed().await?;
+
+    let mut stream = match proxy.receive_battery_changed().await {
+        Ok(s) => s,
+        Err(e) => {
+            let is_absent = matches!(
+                &e,
+                zbus::Error::MethodError(name, ..)
+                    if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
+            );
+            if is_absent {
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "start", "synaptix-daemon.service"])
+                    .status();
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                proxy.receive_battery_changed().await?
+            } else {
+                return Err(Box::new(e));
+            }
+        }
+    };
 
     while let Some(signal) = stream.next().await {
         if let Ok(args) = signal.args() {
             let device_id = args.device_id().to_string();
             let new_state_json = args.new_state_json().to_string();
-
             if let Ok(battery_state) = serde_json::from_str::<BatteryState>(&new_state_json) {
-                let payload = BatteryUpdatePayload {
-                    device_id,
-                    battery_state,
-                };
-                // emit() broadcasts to all windows — Tauri v2 API.
-                app.emit("device-battery-updated", payload).ok();
+                app.emit(
+                    "device-battery-updated",
+                    BatteryUpdatePayload {
+                        device_id,
+                        battery_state,
+                    },
+                )
+                .ok();
             }
         }
     }
+    Ok(())
+}
 
+/// Background task: subscribes to the daemon's `ConnectionChanged` D-Bus signal
+/// and forwards each event to the React frontend via Tauri's event system.
+async fn listen_for_connection_signals(
+    app: AppHandle,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let conn = zbus::Connection::session().await?;
+    ensure_daemon_running(&conn).await;
+    let proxy = SynaptixDaemonProxy::new(&conn).await?;
+
+    let mut stream = match proxy.receive_connection_changed().await {
+        Ok(s) => s,
+        Err(e) => {
+            let is_absent = matches!(
+                &e,
+                zbus::Error::MethodError(name, ..)
+                    if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
+            );
+            if is_absent {
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "start", "synaptix-daemon.service"])
+                    .status();
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                proxy.receive_connection_changed().await?
+            } else {
+                return Err(Box::new(e));
+            }
+        }
+    };
+
+    while let Some(signal) = stream.next().await {
+        if let Ok(args) = signal.args() {
+            let device_id = args.device_id().to_string();
+            let ct_json = args.connection_type_json().to_string();
+            if let Ok(connection_type) =
+                serde_json::from_str::<synaptix_protocol::ConnectionType>(&ct_json)
+            {
+                app.emit(
+                    "device-connection-changed",
+                    ConnectionUpdatePayload {
+                        device_id,
+                        connection_type,
+                    },
+                )
+                .ok();
+            }
+        }
+    }
     Ok(())
 }
 
@@ -137,16 +274,23 @@ pub fn run() {
             }
 
             let handle = app.handle().clone();
-            // Spawn the D-Bus signal listener for the lifetime of the app.
+            let handle2 = app.handle().clone();
+            // Spawn both D-Bus signal listeners independently for the app lifetime.
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = listen_for_signals(handle).await {
-                    eprintln!("D-Bus signal listener failed: {e}");
+                if let Err(e) = listen_for_battery_signals(handle).await {
+                    eprintln!("Battery signal listener failed: {e}");
+                }
+            });
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = listen_for_connection_signals(handle2).await {
+                    eprintln!("Connection signal listener failed: {e}");
                 }
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_razer_devices,
+            get_device_state,
             set_device_lighting,
             set_device_dpi,
         ])

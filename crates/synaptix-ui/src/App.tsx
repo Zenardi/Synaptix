@@ -13,18 +13,27 @@ export type BatteryState =
   | "Full";
 
 // Matches the DeviceEntry struct returned by the Tauri `get_razer_devices` command.
+export type ConnectionType = "Wired" | "Dongle" | "Bluetooth";
+
 export interface RazerDevice {
   device_id: string;
   name: string;
   product_id: unknown;
   battery_state: BatteryState;
   capabilities: (string | Record<string, unknown>)[];
+  connection_type: ConnectionType;
 }
 
 // Matches BatteryUpdatePayload emitted by the Tauri signal listener.
 interface BatteryUpdatePayload {
   device_id: string;
   battery_state: BatteryState;
+}
+
+// Matches ConnectionUpdatePayload emitted by the Tauri signal listener.
+interface ConnectionUpdatePayload {
+  device_id: string;
+  connection_type: ConnectionType;
 }
 
 export function getBatteryLevel(state: BatteryState): number {
@@ -35,7 +44,11 @@ export function getBatteryLevel(state: BatteryState): number {
   return 0;
 }
 
-export function isCharging(state: BatteryState): boolean {
+export function isCharging(state: BatteryState, connectionType?: ConnectionType): boolean {
+  // A wired connection is always powered by USB — always charging by definition.
+  if (connectionType === "Wired") return true;
+  // Full means battery is topped up while on charge.
+  if (state === "Full") return true;
   return typeof state === "object" && "Charging" in state;
 }
 
@@ -59,6 +72,24 @@ function App() {
         setDevices((prev) =>
           prev.map((d) =>
             d.device_id === device_id ? { ...d, battery_state } : d,
+          ),
+        );
+      },
+    );
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
+  // Real-time connection type updates (wired ↔ dongle ↔ bluetooth)
+  useEffect(() => {
+    const unlisten = listen<ConnectionUpdatePayload>(
+      "device-connection-changed",
+      (event) => {
+        const { device_id, connection_type } = event.payload;
+        setDevices((prev) =>
+          prev.map((d) =>
+            d.device_id === device_id ? { ...d, connection_type } : d,
           ),
         );
       },

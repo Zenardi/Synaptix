@@ -21,7 +21,7 @@ fn lighting_params(product_id: &RazerProductId) -> (u8, u8) {
 }
 
 pub struct DeviceManager {
-    devices: HashMap<String, RazerDevice>,
+    pub(crate) devices: HashMap<String, RazerDevice>,
     lighting: HashMap<String, LightingEffect>,
     settings: HashMap<String, DeviceSettings>,
 }
@@ -52,6 +52,22 @@ impl DeviceManager {
     pub fn update_battery(&mut self, id: &str, state: BatteryState) {
         if let Some(device) = self.devices.get_mut(id) {
             device.battery_state = state;
+        }
+    }
+
+    /// Updates the name, product ID, and connection type for a device whose
+    /// physical connection has changed (e.g. dongle → cable).
+    pub fn update_connection(
+        &mut self,
+        id: &str,
+        name: String,
+        product_id: synaptix_protocol::RazerProductId,
+        connection_type: synaptix_protocol::ConnectionType,
+    ) {
+        if let Some(device) = self.devices.get_mut(id) {
+            device.name = name;
+            device.product_id = product_id;
+            device.connection_type = connection_type;
         }
     }
 
@@ -129,6 +145,18 @@ impl DeviceManager {
                 Some(value.to_string())
             })
             .collect()
+    }
+
+    /// Returns the persisted `DeviceSettings` for `device_id` as a JSON string.
+    ///
+    /// Used by the UI on mount to hydrate its local state (DPI, lighting) from
+    /// the values last written by the user. Returns `"{}"` when no settings have
+    /// been saved yet for this device.
+    fn get_device_state(&self, device_id: String) -> String {
+        match self.settings.get(&device_id) {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        }
     }
 
     /// Sets the lighting effect for a device and forwards the USB command to
@@ -270,6 +298,16 @@ impl DeviceManager {
         device_id: &str,
         new_state_json: &str,
     ) -> zbus::Result<()>;
+
+    /// Emitted whenever a device's physical connection type changes
+    /// (e.g. USB cable plugged in while the dongle was active).
+    /// `connection_type_json` is the serde-JSON serialisation of `ConnectionType`.
+    #[zbus(signal)]
+    pub async fn connection_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        device_id: &str,
+        connection_type_json: &str,
+    ) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
@@ -293,6 +331,7 @@ mod tests {
             product_id: RazerProductId::DeathAdderV2Pro,
             battery_state: BatteryState::Discharging(75),
             capabilities: vec![],
+            connection_type: synaptix_protocol::ConnectionType::Wired,
         }
     }
 

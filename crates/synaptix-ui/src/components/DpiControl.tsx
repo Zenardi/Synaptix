@@ -9,10 +9,30 @@ interface Props {
   deviceId: string;
 }
 
+interface DeviceSettings {
+  dpi?: number;
+}
+
 export default function DpiControl({ deviceId }: Props) {
   const [activeDpi, setActiveDpi] = useState<number>(800);
   const [customValue, setCustomValue] = useState<string>("");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Hydrate from daemon on mount (or when device changes) so the UI reflects
+  // the last saved configuration rather than defaulting to 800.
+  useEffect(() => {
+    invoke<string>("get_device_state", { deviceId })
+      .then((json) => {
+        const settings: DeviceSettings = JSON.parse(json);
+        if (settings.dpi != null && settings.dpi >= MIN_DPI) {
+          setActiveDpi(settings.dpi);
+          setCustomValue("");
+        }
+      })
+      .catch(() => {
+        // No saved state — keep the default.
+      });
+  }, [deviceId]);
 
   const applyDpi = (dpi: number) => {
     invoke("set_device_dpi", { deviceId, dpi }).catch((err) =>
