@@ -2,7 +2,11 @@ use crate::razer_protocol::{
     build_battery_query_payload, build_charging_query_payload, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
-use synaptix_protocol::BatteryState;
+use synaptix_protocol::{BatteryState, ConnectionType};
+
+/// PID of the Cobra Pro wired interface (USB cable). Used to detect whether the
+/// cable is plugged in even when the active connection is via the dongle.
+const COBRA_PRO_WIRED_PID: u16 = 0x00AF;
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -117,13 +121,20 @@ pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rus
 /// 4. `response[9]` (`arguments[1]`) holds the value:
 ///    - battery level: raw 0–255 → scale to 0–100%
 ///    - charging:      0 = discharging, 1 = charging
+///
+/// `connection_type` is used to infer charging state more reliably:
+/// - `Wired`: the USB cable *is* the power source — always charging.
+/// - `Dongle`: gaming wirelessly; charging is detected by checking whether the
+///   wired interface (0x00AF) is also present on the USB bus (cable plugged in).
+/// - `Bluetooth`: falls back to the firmware's charging-status response byte.
 pub fn query_battery(
     product_id: u16,
     transaction_id: u8,
     wait_us: u64,
+    connection_type: &ConnectionType,
 ) -> rusb::Result<BatteryState> {
     println!(
-        "[Battery] Querying battery for PID 0x{product_id:04x}, txn_id=0x{transaction_id:02x}, wait={wait_us}µs"
+        "[Battery] Querying battery for PID 0x{product_id:04x}, txn_id=0x{transaction_id:02x}, wait={wait_us}µs, conn={connection_type:?}"
     );
 
     let handle = open_razer_device(product_id)?;
@@ -149,20 +160,30 @@ pub fn query_battery(
     println!("[Battery] Raw level: {raw_level}/255 → {percent}%");
 
     // ── Charging status ───────────────────────────────────────────────────────
-    let charging_query = build_charging_query_payload(transaction_id);
+    //
+    // Wired: USB cable supplies power directly — always charging by definition.
+    // Dongle: wireless gaming; charging happens on the *cable* interface
+    //         (0x00AF). We detect it via a cheap PID scan — no device open.
+    // Bluetooth / firmware fallback: use the charging-status HID command.
+    let is_charging = match connection_type {
+        ConnectionType::Wired => {
+            println!("[Battery] Wired connection — forcing is_charging=true");
+            true
+        }
+        ConnectionType::Dongle => {
+            let cable_present = detect_connected_pid(&[COBRA_PRO_WIRED_PID]).is_some();
+            println!("[Battery] Dongle connection, cable present: {cable_present}");
+            if cable_present {
+                true
+            } else {
+                query_charging_status(&handle, transaction_id, &sleep, timeout)?
+            }
+        }
+        ConnectionType::Bluetooth => {
+            query_charging_status(&handle, transaction_id, &sleep, timeout)?
+        }
+    };
 
-    handle
-        .write_control(0x21, 0x09, 0x0300, 0x00, &charging_query, timeout)
-        .inspect_err(|e| eprintln!("[Battery] SET_REPORT (charging) failed: {e:?}"))?;
-
-    std::thread::sleep(sleep);
-
-    let mut charging_response = [0u8; REPORT_LEN];
-    handle
-        .read_control(0xA1, 0x01, 0x0300, 0x00, &mut charging_response, timeout)
-        .inspect_err(|e| eprintln!("[Battery] GET_REPORT (charging) failed: {e:?}"))?;
-
-    let is_charging = charging_response[9] != 0;
     println!("[Battery] Charging: {is_charging}");
 
     let state = if is_charging && percent >= 100 {
@@ -175,4 +196,27 @@ pub fn query_battery(
 
     println!("[Battery] Resolved state: {state:?}");
     Ok(state)
+}
+
+/// Sends a charging-status HID query and returns whether the device is charging.
+fn query_charging_status(
+    handle: &DeviceHandle<Context>,
+    transaction_id: u8,
+    sleep: &std::time::Duration,
+    timeout: std::time::Duration,
+) -> rusb::Result<bool> {
+    let charging_query = build_charging_query_payload(transaction_id);
+
+    handle
+        .write_control(0x21, 0x09, 0x0300, 0x00, &charging_query, timeout)
+        .inspect_err(|e| eprintln!("[Battery] SET_REPORT (charging) failed: {e:?}"))?;
+
+    std::thread::sleep(*sleep);
+
+    let mut charging_response = [0u8; REPORT_LEN];
+    handle
+        .read_control(0xA1, 0x01, 0x0300, 0x00, &mut charging_response, timeout)
+        .inspect_err(|e| eprintln!("[Battery] GET_REPORT (charging) failed: {e:?}"))?;
+
+    Ok(charging_response[9] != 0)
 }

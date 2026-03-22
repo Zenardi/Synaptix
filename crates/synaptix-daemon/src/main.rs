@@ -73,23 +73,41 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     log::info!("[Detect] Cobra Pro on USB: PID=0x{initial_pid:04X} connection={}", initial_conn.label());
 
     // Shared state: the watch task owns mutation; the battery loop reads it.
-    let shared: std::sync::Arc<tokio::sync::Mutex<(u16, String)>> =
-        std::sync::Arc::new(tokio::sync::Mutex::new((initial_pid, initial_name.clone())));
+    let shared: std::sync::Arc<tokio::sync::Mutex<(u16, String, ConnectionType)>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new((initial_pid, initial_name.clone(), initial_conn.clone())));
 
     let cobra_pid = initial_pid;
     let cobra_name = initial_name.clone();
 
     // Query real battery state on startup so the tray shows real data immediately.
+    // Retry up to 3 times (500ms apart) in case the USB device isn't ready yet.
     let initial_battery = {
         let pid = cobra_pid;
-        tokio::task::spawn_blocking(move || usb_backend::query_battery(pid, txn_id, wait_us))
+        let conn = initial_conn.clone();
+        let mut attempt = 0u8;
+        loop {
+            let pid_c = pid;
+            let conn_c = conn.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                usb_backend::query_battery(pid_c, txn_id, wait_us, &conn_c)
+            })
             .await
             .ok()
-            .and_then(|r| r.ok())
-            .unwrap_or_else(|| {
-                log::warn!("[Battery] Startup query failed — defaulting to 0 %.");
-                BatteryState::Discharging(0)
-            })
+            .and_then(|r| r.ok());
+
+            match result {
+                Some(state) => break state,
+                None => {
+                    attempt += 1;
+                    if attempt >= 3 {
+                        log::warn!("[Battery] Startup query failed after 3 attempts — defaulting to unknown.");
+                        break BatteryState::Discharging(0);
+                    }
+                    log::warn!("[Battery] Startup query attempt {attempt} failed, retrying in 500ms…");
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
+        }
     };
 
     log::info!("[Battery] Startup state: {initial_battery:?}");
@@ -182,10 +200,10 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             watch_product_id = new_product_id.clone();
             watch_conn = new_conn.clone();
 
-            // Update shared state so the battery loop uses the right PID.
+            // Update shared state so the battery loop uses the right PID + connection type.
             {
                 let mut s = shared_watch.lock().await;
-                *s = (new_pid, new_name.clone());
+                *s = (new_pid, new_name.clone(), new_conn.clone());
             }
 
             let Ok(iface_ref) = conn_watch
@@ -215,6 +233,39 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             )
             .await
             .ok();
+
+            // Immediately re-query battery after a connection change so the UI
+            // reflects the new charging state without waiting 60 s.
+            if new_pid != 0 {
+                let conn_for_query = new_conn.clone();
+                if let Ok(Ok(fresh_state)) = tokio::task::spawn_blocking(move || {
+                    usb_backend::query_battery(new_pid, txn_id, wait_us, &conn_for_query)
+                })
+                .await
+                {
+                    let state_json = serde_json::to_string(&fresh_state)
+                        .unwrap_or_else(|_| "\"Discharging\"".to_string());
+                    // Re-acquire the interface ref for the battery signal.
+                    if let Ok(bat_iface_ref) = conn_watch
+                        .object_server()
+                        .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                        .await
+                    {
+                        {
+                            let mut iface = bat_iface_ref.get_mut().await;
+                            iface.update_battery("cobra-pro", fresh_state.clone());
+                        }
+                        DeviceManager::battery_changed(
+                            bat_iface_ref.signal_emitter(),
+                            "cobra-pro",
+                            &state_json,
+                        )
+                        .await
+                        .ok();
+                        log::info!("[Battery] Post-reconnect state: {fresh_state:?}");
+                    }
+                }
+            }
         }
     });
 
@@ -223,14 +274,14 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
-        // Read the current PID and name from shared state (updated by watch task).
-        let (pid, current_name) = {
+        // Read the current PID, name, and connection type from shared state (updated by watch task).
+        let (pid, current_name, current_conn) = {
             let s = shared.lock().await;
             s.clone()
         };
 
         let new_state = match tokio::task::spawn_blocking(move || {
-            usb_backend::query_battery(pid, txn_id, wait_us)
+            usb_backend::query_battery(pid, txn_id, wait_us, &current_conn)
         })
         .await
         {
