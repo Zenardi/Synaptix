@@ -196,7 +196,7 @@ pub fn validate_response(
     match response[0] {
         STATUS_SUCCESSFUL => {}
         STATUS_BUSY => return Err(false), // soft error — caller should retry
-        _ => {
+        STATUS_FAILURE | STATUS_TIMEOUT | STATUS_NOT_SUPPORTED | _ => {
             eprintln!(
                 "[USB] Response status=0x{:02x} for cmd 0x{command_class:02x}/0x{command_id:02x}",
                 response[0]
