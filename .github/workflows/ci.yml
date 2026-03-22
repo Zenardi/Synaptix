@@ -16,7 +16,14 @@ on:
       - "*.md"
       - "docs/**"
       - "ADD_NEW_DEVICES.md"
+  workflow_dispatch:
+
+# Required for softprops/action-gh-release to create/update releases.
+permissions:
+  contents: write
+
 jobs:
+  # ── CI: lint, test, build, and store the .deb artifact ────────────────────
   build-and-test:
     runs-on: ubuntu-latest
     env:
@@ -45,10 +52,10 @@ jobs:
             libudev-dev
 
       # ── Node.js ──────────────────────────────────────────────────────────────
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: crates/synaptix-ui/package-lock.json
 
@@ -89,28 +96,43 @@ jobs:
         run: cargo build --release -p synaptix-daemon
 
       # ── Tauri .deb bundle ────────────────────────────────────────────────────
+      # src-tauri is a workspace member, so cargo output lands in the workspace
+      # root target/. The bundle is therefore at target/release/bundle/deb/.
       - name: Build UI and package .deb
         working-directory: crates/synaptix-ui
         run: npm run tauri build
 
-      # ── Keep the .deb as a workflow artifact on every successful build ────────
-      - name: Upload .deb as workflow artifact
+      # ── Store .deb for the release job (and as a downloadable artifact) ──────
+      - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
           name: synaptix-deb
           path: target/release/bundle/deb/*.deb
           if-no-files-found: error
 
-      # ── Publish to GitHub Releases (only on version tags, e.g. v0.1.0) ───────
+  # ── Release: publish to GitHub Releases on version tags ───────────────────
+  release:
+    needs: build-and-test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      # Download the .deb built by the CI job — no need to rebuild.
+      - name: Download .deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: synaptix-deb
+          path: dist/
+
       - name: Publish to GitHub Releases
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           name: "Synaptix ${{ github.ref_name }}"
-          tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          files: target/release/bundle/deb/*.deb
+          files: dist/*.deb
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
