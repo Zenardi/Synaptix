@@ -1,4 +1,6 @@
 mod device_manager;
+mod razer_protocol;
+mod usb_backend;
 
 use device_manager::DeviceManager;
 use synaptix_protocol::{BatteryState, RazerDevice, RazerProductId};
@@ -7,12 +9,12 @@ use synaptix_protocol::{BatteryState, RazerDevice, RazerProductId};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut manager = DeviceManager::new();
 
-    // Seed a mock device so the daemon always has something to broadcast.
+    // Seed the Cobra Pro as the active device.
     manager.add_device(
-        "da-v2-pro".to_string(),
+        "cobra-pro".to_string(),
         RazerDevice {
-            name: "Razer DeathAdder V2 Pro".to_string(),
-            product_id: RazerProductId::DeathAdderV2Pro,
+            name: "Razer Cobra Pro".to_string(),
+            product_id: RazerProductId::CobraProWireless,
             battery_state: BatteryState::Discharging(75),
         },
     );
@@ -45,13 +47,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         {
             let mut iface = iface_ref.get_mut().await;
-            iface.update_battery("da-v2-pro", new_state);
+            iface.update_battery("cobra-pro", new_state);
         }
 
         // Emit the D-Bus signal so all subscribers are notified.
         DeviceManager::battery_changed(
             &iface_ref.signal_emitter(),
-            "da-v2-pro",
+            "cobra-pro",
             &state_json,
         )
         .await

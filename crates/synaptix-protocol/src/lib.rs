@@ -9,6 +9,8 @@ pub enum RazerProductId {
     ViperUltimate,            // 0x007A
     BasiliskUltimate,         // 0x0085
     NagaPro,                  // 0x008F
+    CobraProWired,            // 0x00AF
+    CobraProWireless,         // 0x00B0
     // Headsets
     KrakenUltimate,           // 0x0527
     KrakenV3HyperSense,       // 0x0560
@@ -38,6 +40,25 @@ pub enum BatteryState {
     Charging(u8),
     Discharging(u8),
     Full,
+}
+
+impl RazerProductId {
+    /// Returns the USB product ID (PID) for this device (VID is always `0x1532`).
+    pub fn usb_pid(&self) -> u16 {
+        match self {
+            RazerProductId::DeathAdderV2Pro      => 0x007C,
+            RazerProductId::MambaWireless        => 0x0073,
+            RazerProductId::ViperUltimate        => 0x007A,
+            RazerProductId::BasiliskUltimate     => 0x0085,
+            RazerProductId::NagaPro              => 0x008F,
+            RazerProductId::CobraProWired        => 0x00AF,
+            RazerProductId::CobraProWireless     => 0x00B0,
+            RazerProductId::KrakenUltimate       => 0x0527,
+            RazerProductId::KrakenV3HyperSense   => 0x0560,
+            RazerProductId::BlackWidowV3Pro      => 0x025A,
+            RazerProductId::Unknown(pid)         => *pid,
+        }
+    }
 }
 
 impl BatteryState {

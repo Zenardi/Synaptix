@@ -1,8 +1,23 @@
 use std::collections::HashMap;
-#[cfg(not(test))]
-use synaptix_protocol::{BatteryState, LightingEffect, RazerDevice};
-#[cfg(test)]
 use synaptix_protocol::{BatteryState, LightingEffect, RazerDevice, RazerProductId};
+
+/// Returns the (transaction_id, led_id) pair for a device's static lighting command.
+/// Derived from `razer_attr_write_matrix_effect_static_common` in razermouse_driver.c.
+fn lighting_params(product_id: &RazerProductId) -> (u8, u8) {
+    use crate::razer_protocol::{
+        LED_BACKLIGHT, LED_ZERO, TRANSACTION_ID_COBRA, TRANSACTION_ID_DA,
+    };
+    match product_id {
+        // Cobra Pro / Basilisk V3 Pro group: transaction_id=0x1F, ZERO_LED
+        RazerProductId::CobraProWired | RazerProductId::CobraProWireless => {
+            (TRANSACTION_ID_COBRA, LED_ZERO)
+        }
+        // DeathAdder V2 Pro group: transaction_id=0x3F, BACKLIGHT_LED
+        RazerProductId::DeathAdderV2Pro => (TRANSACTION_ID_DA, LED_BACKLIGHT),
+        // Sensible default for anything not yet explicitly mapped
+        _ => (TRANSACTION_ID_DA, LED_BACKLIGHT),
+    }
+}
 
 pub struct DeviceManager {
     devices: HashMap<String, RazerDevice>,
@@ -66,17 +81,52 @@ impl DeviceManager {
             .collect()
     }
 
-    /// Sets the lighting effect for a device.
-    /// `effect_json` is the serde-JSON serialisation of `LightingEffect`.
-    fn set_lighting(&mut self, device_id: String, effect_json: String) -> bool {
-        let Ok(effect) = serde_json::from_str::<LightingEffect>(&effect_json) else {
+    /// Sets the lighting effect for a device and forwards the USB command to
+    /// the physical hardware via `usb_backend`.
+    ///
+    /// Returns `true` if the device exists and the effect was accepted,
+    /// `false` if the device ID is unknown or the JSON is malformed.
+    async fn set_lighting(&mut self, device_id: String, effect_json: String) -> bool {
+        println!("[SetLighting] Received command for device: {:?}", device_id);
+        println!("[SetLighting] Effect JSON: {}", effect_json);
+
+        let effect = match serde_json::from_str::<LightingEffect>(&effect_json) {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("[SetLighting] Failed to deserialise LightingEffect: {err:?}");
+                return false;
+            }
+        };
+
+        let Some(device) = self.devices.get(&device_id) else {
+            eprintln!("[SetLighting] Unknown device ID: {device_id}");
             return false;
         };
-        let existed = self.devices.contains_key(&device_id);
-        if existed {
-            self.lighting.insert(device_id, effect);
+
+        let product_id = device.product_id.usb_pid();
+        let (txn_id, led_id) = lighting_params(&device.product_id);
+        println!("[SetLighting] Resolved USB PID: 0x{product_id:04X}, txn_id=0x{txn_id:02X}, led_id=0x{led_id:02X}");
+
+        self.lighting.insert(device_id.clone(), effect.clone());
+
+        let LightingEffect::Static([r, g, b]) = effect;
+        println!("[SetLighting] Dispatching Static({r}, {g}, {b}) to USB backend …");
+
+        // Await the blocking task so errors are never swallowed.
+        let result = tokio::task::spawn_blocking(move || {
+            let payload =
+                crate::razer_protocol::build_static_color_payload(txn_id, led_id, r, g, b);
+            crate::usb_backend::send_control_transfer(product_id, &payload)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => println!("[SetLighting] USB transfer succeeded for {device_id}"),
+            Ok(Err(e)) => eprintln!("[SetLighting] USB Transfer Failed: {e:?}"),
+            Err(e)     => eprintln!("[SetLighting] spawn_blocking panicked: {e:?}"),
         }
-        existed
+
+        true
     }
 
     /// Emitted whenever a device's battery state changes.
