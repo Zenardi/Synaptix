@@ -131,6 +131,18 @@ impl DeviceManager {
             .collect()
     }
 
+    /// Returns the persisted `DeviceSettings` for `device_id` as a JSON string.
+    ///
+    /// Used by the UI on mount to hydrate its local state (DPI, lighting) from
+    /// the values last written by the user. Returns `"{}"` when no settings have
+    /// been saved yet for this device.
+    fn get_device_state(&self, device_id: String) -> String {
+        match self.settings.get(&device_id) {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        }
+    }
+
     /// Sets the lighting effect for a device and forwards the USB command to
     /// the physical hardware via `usb_backend`.
     ///

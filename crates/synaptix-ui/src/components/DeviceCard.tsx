@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import type { RazerDevice } from "../App";
@@ -22,6 +22,15 @@ const PRESETS = [
 ];
 
 type EffectMode = "Static" | "Breathing" | "Spectrum";
+
+interface DeviceSettings {
+  lighting?: { Static?: [number, number, number]; Breathing?: [number, number, number] } | "Spectrum";
+  dpi?: number;
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
 
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
@@ -60,6 +69,34 @@ export default function DeviceCard({ device }: Props) {
 
   const [mode, setMode] = useState<EffectMode>("Static");
   const [selectedColor, setSelectedColor] = useState("#44d62c");
+
+  // Hydrate lighting state from the daemon on mount so the UI reflects
+  // the last saved colour/effect rather than always defaulting to green Static.
+  useEffect(() => {
+    invoke<string>("get_device_state", { deviceId: device.device_id })
+      .then((json) => {
+        const settings: DeviceSettings = JSON.parse(json);
+        if (!settings.lighting) return;
+        if (settings.lighting === "Spectrum") {
+          setMode("Spectrum");
+          return;
+        }
+        if (typeof settings.lighting === "object") {
+          if ("Static" in settings.lighting && settings.lighting.Static) {
+            const [r, g, b] = settings.lighting.Static;
+            setMode("Static");
+            setSelectedColor(rgbToHex(r, g, b));
+          } else if ("Breathing" in settings.lighting && settings.lighting.Breathing) {
+            const [r, g, b] = settings.lighting.Breathing;
+            setMode("Breathing");
+            setSelectedColor(rgbToHex(r, g, b));
+          }
+        }
+      })
+      .catch(() => {
+        // No saved lighting — keep defaults.
+      });
+  }, [device.device_id]);
 
   const MODES: EffectMode[] = ["Static", "Breathing", "Spectrum"];
   const showColorPicker = mode !== "Spectrum";

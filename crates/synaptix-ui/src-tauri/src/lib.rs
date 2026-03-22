@@ -12,6 +12,8 @@ use tauri::{AppHandle, Emitter, Manager};
 trait SynaptixDaemon {
     fn get_devices(&self) -> zbus::Result<Vec<String>>;
 
+    fn get_device_state(&self, device_id: &str) -> zbus::Result<String>;
+
     fn set_lighting(&self, device_id: &str, effect_json: &str) -> zbus::Result<bool>;
 
     fn set_dpi(&self, device_id: &str, x: u16, y: u16) -> zbus::Result<bool>;
@@ -92,6 +94,24 @@ async fn get_razer_devices() -> Result<Vec<DeviceEntry>, String> {
         .collect();
 
     Ok(entries)
+}
+
+/// Tauri IPC command: fetches persisted settings (DPI, lighting) for a device.
+///
+/// Returns a JSON string matching `DeviceSettings` — `{}` if nothing saved yet.
+/// The React frontend calls this on mount to hydrate its local state.
+#[tauri::command]
+async fn get_device_state(device_id: String) -> Result<String, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| e.to_string())?;
+    let proxy = SynaptixDaemonProxy::new(&conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    proxy
+        .get_device_state(&device_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Tauri IPC command: applies a lighting effect to a device via the daemon.
@@ -211,6 +231,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_razer_devices,
+            get_device_state,
             set_device_lighting,
             set_device_dpi,
         ])
