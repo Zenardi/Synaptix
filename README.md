@@ -409,6 +409,13 @@ All 209+ devices below are recognized by the daemon out of the box.
 
 Contributions are welcome. Please follow the development rules below to keep the architecture clean.
 
+### Reporting Issues & Requesting Features
+
+Use the structured GitHub Issue templates to ensure reports have the hardware data and log output needed for the AI-assisted development pipeline:
+
+- 🐛 **[Report a Bug](.github/ISSUE_TEMPLATE/REPORT_BUG.md)** — D-Bus failures, USB errors, incorrect hardware behaviour. Include your daemon logs (`journalctl --user -u synaptix-daemon -n 50`).
+- ✨ **[Request a Feature](.github/ISSUE_TEMPLATE/REQUEST_FEATURE.md)** — New lighting effects, DPI profiles, device support. Include the target PID and the relevant OpenRazer Python file path.
+
 ### Workflow
 
 1. **Fork** the repository and create a feature branch: `git checkout -b feat/my-feature`.
