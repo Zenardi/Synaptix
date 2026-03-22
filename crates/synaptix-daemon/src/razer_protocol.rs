@@ -116,7 +116,8 @@ pub fn build_static_color_payload(
 /// `response[9]` (`arguments[1]`) holds a raw 0–255 level from the firmware.
 /// This maps linearly to 0–100 % using integer arithmetic.
 ///
-/// Used by `usb_backend::query_battery` and by the TDD test suite.
+/// Used by the TDD test suite.
+#[cfg(test)]
 pub fn parse_battery_response(response: &[u8; REPORT_LEN]) -> u8 {
     let raw = response[9];
     ((raw as u16 * 100) / 255) as u8
@@ -196,12 +197,19 @@ pub fn validate_response(
     match response[0] {
         STATUS_SUCCESSFUL => {}
         STATUS_BUSY => return Err(false), // soft error — caller should retry
-        STATUS_FAILURE | STATUS_TIMEOUT | STATUS_NOT_SUPPORTED | _ => {
+        STATUS_FAILURE | STATUS_TIMEOUT | STATUS_NOT_SUPPORTED => {
             eprintln!(
                 "[USB] Response status=0x{:02x} for cmd 0x{command_class:02x}/0x{command_id:02x}",
                 response[0]
             );
-            return Err(true); // hard error
+            return Err(true);
+        }
+        _ => {
+            eprintln!(
+                "[USB] Unknown response status=0x{:02x} for cmd 0x{command_class:02x}/0x{command_id:02x}",
+                response[0]
+            );
+            return Err(true);
         }
     }
     if response[6] != command_class || response[7] != command_id {

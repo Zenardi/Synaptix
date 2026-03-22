@@ -29,10 +29,8 @@ fn detect_cobra_pro() -> (u16, RazerProductId, ConnectionType, String) {
                 .find(|(cp, _)| *cp == p)
                 .map(|(cp, ct)| (*cp, ct.clone()))
         })
-        .unwrap_or_else(|| {
-            // Nothing on USB — assume Bluetooth (not enumerable via rusb).
-            (0x00B0, ConnectionType::Bluetooth)
-        });
+        // Nothing on USB — assume Bluetooth (not enumerable via rusb).
+        .unwrap_or((0x00B0, ConnectionType::Bluetooth));
 
     let product_id = match pid {
         0x00AF => RazerProductId::CobraProWired,
