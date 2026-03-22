@@ -86,17 +86,36 @@ pub fn generate_battery_icon(percentage: u8) -> tray_icon::Icon {
 /// **Must be called from the GTK main thread** before `gtk::main()`.
 /// The tray icon will remain visible until the process exits.
 pub fn start_tray(rx: Receiver<TrayUpdate>) {
+    use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
+
+    // libayatana-appindicator3 REQUIRES a menu to show the indicator.
+    // Without one the icon is silently suppressed by the AppIndicator protocol.
+    let quit_item = MenuItem::new("Quit Synaptix", true, None);
+    let menu = Menu::new();
+    menu.append(&PredefinedMenuItem::separator()).ok();
+    menu.append(&quit_item).ok();
+
     let icon = generate_battery_icon(0);
 
     let tray = TrayIconBuilder::new()
         .with_icon(icon)
         .with_tooltip("Synaptix – Scanning…")
+        .with_menu(Box::new(menu))
         .build()
         .expect("failed to build AppIndicator tray icon");
+
+    let quit_id = quit_item.id().clone();
 
     // Poll the channel every second on the GTK main thread.
     // The closure captures both `tray` and `rx`; they live for the process lifetime.
     glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+        // Handle menu events (e.g. "Quit").
+        if let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+            if event.id == quit_id {
+                gtk::main_quit();
+            }
+        }
+
         while let Ok(update) = rx.try_recv() {
             let icon = generate_battery_icon(update.percentage);
             let suffix = if update.is_charging { " ⚡" } else { "" };
