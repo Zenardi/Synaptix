@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             iface.update_battery("cobra-pro", new_state);
         }
 
-        DeviceManager::battery_changed(&iface_ref.signal_emitter(), "cobra-pro", &state_json)
+        DeviceManager::battery_changed(iface_ref.signal_emitter(), "cobra-pro", &state_json)
             .await
             .ok();
 

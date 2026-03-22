@@ -82,7 +82,6 @@ pub struct RazerDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
 
     #[test]
     fn test_device_serialization() {

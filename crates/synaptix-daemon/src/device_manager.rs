@@ -231,7 +231,7 @@ mod tests {
             iface.update_battery("da-v2-pro", new_state);
         }
 
-        DeviceManager::battery_changed(&iface_ref.signal_emitter(), "da-v2-pro", &state_json)
+        DeviceManager::battery_changed(iface_ref.signal_emitter(), "da-v2-pro", &state_json)
             .await
             .unwrap();
 
