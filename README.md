@@ -6,6 +6,7 @@
 
 Synaptix is a Rust-powered daemon and GUI that replaces the `openrazer` + Polychromatic stack with a clean, event-driven architecture built from the ground up.
 
+[![Synaptix CI](https://github.com/Zenardi/Synaptix/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Zenardi/Synaptix/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/tauri-v2-blue.svg)](https://tauri.app/)

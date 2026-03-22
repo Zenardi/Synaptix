@@ -1,0 +1,90 @@
+name: Synaptix CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── System dependencies (Tauri + D-Bus + USB) ────────────────────────────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            libudev-dev
+
+      # ── Node.js ──────────────────────────────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/synaptix-ui/package-lock.json
+
+      # ── Rust toolchain ───────────────────────────────────────────────────────
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # ── Cargo cache ──────────────────────────────────────────────────────────
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # ── Frontend dependencies ────────────────────────────────────────────────
+      - name: Install frontend dependencies
+        working-directory: crates/synaptix-ui
+        run: npm ci
+
+      # ── Format check ─────────────────────────────────────────────────────────
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      # ── Clippy lint ──────────────────────────────────────────────────────────
+      - name: Lint with Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # ── Rust tests (protocol + daemon TDD suite) ─────────────────────────────
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      # ── Frontend tests (Vitest + Testing Library) ────────────────────────────
+      - name: Run frontend tests
+        working-directory: crates/synaptix-ui
+        run: npm test
+
+      # ── Daemon release binary (required by the .deb bundler) ─────────────────
+      - name: Build daemon (release)
+        run: cargo build --release -p synaptix-daemon
+
+      # ── Tauri .deb bundle ────────────────────────────────────────────────────
+      - name: Build UI and package .deb
+        working-directory: crates/synaptix-ui
+        run: npm run tauri build
+
+      # ── Upload installer artifact ────────────────────────────────────────────
+      - name: Upload .deb installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: synaptix-deb
+          path: crates/synaptix-ui/src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
