@@ -9,9 +9,14 @@
 Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https://github.com/openrazer/openrazer) + Polychromatic stack with a clean, event-driven architecture built from the ground up.
 
 [![Synaptix CI](https://github.com/Zenardi/Synaptix/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Zenardi/Synaptix/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/Zenardi/Synaptix?color=44d62c&label=release)](https://github.com/Zenardi/Synaptix/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/tauri-v2-blue.svg)](https://tauri.app/)
+[![Platform](https://img.shields.io/badge/platform-Linux-informational?logo=linux&logoColor=white)](https://github.com/Zenardi/Synaptix)
+[![Devices](https://img.shields.io/badge/supported%20devices-219-44d62c)](./README.md#-supported-devices)
+[![D-Bus](https://img.shields.io/badge/IPC-D--Bus-blueviolet)](https://www.freedesktop.org/wiki/Software/dbus/)
+[![USB](https://img.shields.io/badge/hardware-rusb-red)](https://github.com/a1ien/rusb)
 
 </div>
 
