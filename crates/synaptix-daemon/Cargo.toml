@@ -1,7 +1,11 @@
 [package]
 name = "synaptix-daemon"
-version = "0.1.0"
-edition = "2021"
+description = "Headless Razer device daemon — bridges raw USB (rusb) hardware to a D-Bus interface (zbus)."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "synaptix-daemon"

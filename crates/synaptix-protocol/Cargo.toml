@@ -1,7 +1,11 @@
 [package]
 name = "synaptix-protocol"
-version = "0.1.0"
-edition = "2021"
+description = "Shared data contracts (device types, battery state, lighting effects) for the Synaptix workspace."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

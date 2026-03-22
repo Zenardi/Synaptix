@@ -5,3 +5,11 @@ members = [
     "crates/synaptix-ui/src-tauri",
 ]
 resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Eduardo Zenardi"]
+license = "MIT"
+repository = "https://github.com/Zenardi/Synaptix"
+homepage = "https://github.com/Zenardi/Synaptix"
