@@ -353,6 +353,9 @@ Verify membership with `groups`. If `plugdev` is listed, you can run the daemon 
 
 Contributions are welcome. Please follow the development rules below to keep the architecture clean.
 
+> [!TIP]
+> **Adding a new device?** See the dedicated guide: [ADD_NEW_DEVICES.md](./ADD_NEW_DEVICES.md)
+
 ### Workflow
 
 1. **Fork** the repository and create a feature branch: `git checkout -b feat/my-feature`.
@@ -373,3 +376,8 @@ Contributions are welcome. Please follow the development rules below to keep the
 ## License
 
 [MIT](./LICENSE) © 2026 Eduardo Zenardi
+
+
+---
+
+The project is licensed under the MIT and is not officially endorsed by [Razer, Inc](http://www.razer.com/).

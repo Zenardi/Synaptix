@@ -8,13 +8,14 @@ on:
       - "README.md"
       - "*.md"
       - "docs/**"
+      - "ADD_NEW_DEVICES.md"
   pull_request:
     branches: [main]
     paths-ignore:
       - "README.md"
       - "*.md"
       - "docs/**"
-
+      - "ADD_NEW_DEVICES.md"
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
