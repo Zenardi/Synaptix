@@ -184,84 +184,104 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         if initial_pid == 0x00AF { RazerProductId::CobraProWired } else { RazerProductId::CobraProWireless }
     };
 
+    // Track cable presence separately: when dongle+cable are both connected,
+    // the connection type stays "Dongle" but charging state must update quickly.
+    let watch_cable_init = if matches!(watch_conn, ConnectionType::Dongle) {
+        tokio::task::spawn_blocking(|| {
+            usb_backend::detect_connected_pid(&[usb_backend::COBRA_PRO_WIRED_PID]).is_some()
+        })
+        .await
+        .unwrap_or(false)
+    } else {
+        false
+    };
+
     tokio::spawn(async move {
+        let mut watch_cable_present = watch_cable_init;
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
-            let (new_pid, new_product_id, new_conn, new_name) =
-                tokio::task::spawn_blocking(detect_cobra_pro)
-                    .await
-                    .unwrap_or_else(|_| {
-                        (watch_pid, watch_product_id.clone(), watch_conn.clone(), String::new())
-                    });
+            let (new_pid, new_product_id, new_conn, new_name, new_cable) =
+                tokio::task::spawn_blocking(|| {
+                    let (pid, prod, conn, name) = detect_cobra_pro();
+                    // Detect cable separately — when both dongle + cable are
+                    // present detect_cobra_pro returns Dongle, but we still need
+                    // to know the cable appeared/disappeared for charging updates.
+                    let cable = matches!(conn, ConnectionType::Dongle)
+                        && usb_backend::detect_connected_pid(&[usb_backend::COBRA_PRO_WIRED_PID])
+                            .is_some();
+                    (pid, prod, conn, name, cable)
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    (watch_pid, watch_product_id.clone(), watch_conn.clone(), String::new(), watch_cable_present)
+                });
 
-            if new_pid == watch_pid && new_conn == watch_conn {
+            let conn_changed = new_pid != watch_pid || new_conn != watch_conn;
+            let cable_changed = new_cable != watch_cable_present;
+
+            if !conn_changed && !cable_changed {
                 continue;
             }
-
-            log::info!(
-                "[Detect] Connection changed: {} → {} (PID 0x{:04X} → 0x{:04X})",
-                watch_conn.label(), new_conn.label(), watch_pid, new_pid
-            );
 
             watch_pid = new_pid;
             watch_product_id = new_product_id.clone();
             watch_conn = new_conn.clone();
+            watch_cable_present = new_cable;
 
-            // Update shared state so the battery loop uses the right PID + connection type.
+            // Update shared state so the 60s poll uses the right PID/conn type.
             {
                 let mut s = shared_watch.lock().await;
                 *s = (new_pid, new_name.clone(), new_conn.clone());
             }
 
-            let Ok(iface_ref) = conn_watch
-                .object_server()
-                .interface::<_, DeviceManager>("/org/synaptix/Daemon")
-                .await
-            else {
-                continue;
-            };
+            // Emit ConnectionChanged only when the actual connection type switched.
+            if conn_changed {
+                let Ok(iface_ref) = conn_watch
+                    .object_server()
+                    .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                    .await
+                else {
+                    continue;
+                };
 
-            {
-                let mut iface = iface_ref.get_mut().await;
-                iface.update_connection(
+                {
+                    let mut iface = iface_ref.get_mut().await;
+                    iface.update_connection(
+                        "cobra-pro",
+                        new_name,
+                        new_product_id,
+                        new_conn.clone(),
+                    );
+                }
+
+                let conn_json = serde_json::to_string(&new_conn)
+                    .unwrap_or_else(|_| "\"Bluetooth\"".to_string());
+                DeviceManager::connection_changed(
+                    iface_ref.signal_emitter(),
                     "cobra-pro",
-                    new_name,
-                    new_product_id,
-                    new_conn.clone(),
+                    &conn_json,
+                )
+                .await
+                .ok();
+
+                log::info!(
+                    "[Detect] Connection changed to {} (PID 0x{new_pid:04X})",
+                    new_conn.label()
                 );
+            } else {
+                log::info!("[Detect] Cable {} while {}", if new_cable { "plugged in" } else { "unplugged" }, new_conn.label());
             }
 
-            let conn_json = serde_json::to_string(&new_conn)
-                .unwrap_or_else(|_| "\"Bluetooth\"".to_string());
-            DeviceManager::connection_changed(
-                iface_ref.signal_emitter(),
-                "cobra-pro",
-                &conn_json,
-            )
-            .await
-            .ok();
-
-            // Immediately update battery state after a connection change.
-            //
-            // Wired: Wait 500 ms for the USB device to finish enumeration, then
-            // query the wired interface (0x00AF) with up to 3 retries. The Cobra
-            // Pro wired firmware supports battery queries (confirmed from reference
-            // driver), but needs a moment after plug-in to respond.
-            // If ALL retries return 0, do NOT emit — it means the device isn't
-            // ready yet; the next 60-second poll will pick it up. The UI's
-            // connection-type-based charging badge already shows ⚡ Charging
-            // instantly via the ConnectionChanged signal emitted above.
-            //
-            // Dongle: query USB normally (cable-presence check inside query_battery
-            // handles the charging flag correctly).
-            //
-            // Bluetooth: no USB interface available — skip.
+            // Immediately update battery after any connection or cable change.
+            // Wired: Wait 200 ms for USB enumeration, then query with retries.
+            // Dongle: query immediately (cable-presence check in query_battery handles charging).
+            // Bluetooth: no USB interface — skip.
             let fresh_state_opt: Option<BatteryState> = match &new_conn {
                 ConnectionType::Wired => {
                     // Short pause so the kernel HID driver finishes binding before
                     // we try to send a control transfer.
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
                     let mut wired_state: Option<BatteryState> = None;
                     for attempt in 1..=3u8 {
@@ -289,7 +309,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                             }
                             _ => {
                                 log::warn!("[Battery] Wired query attempt {attempt} returned 0 or failed — retrying…");
-                                tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
                             }
                         }
                     }

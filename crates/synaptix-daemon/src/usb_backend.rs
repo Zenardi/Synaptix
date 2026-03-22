@@ -7,7 +7,7 @@ use synaptix_protocol::{BatteryState, ConnectionType};
 
 /// PID of the Cobra Pro wired interface (USB cable). Used to detect whether the
 /// cable is plugged in even when the active connection is via the dongle.
-const COBRA_PRO_WIRED_PID: u16 = 0x00AF;
+pub const COBRA_PRO_WIRED_PID: u16 = 0x00AF;
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -112,6 +112,47 @@ pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rus
     Ok(())
 }
 
+/// Queries battery level (0–100%) from an already-open device handle.
+///
+/// Retries up to 3 times on STATUS_BUSY (0x01). Returns `Err` if BUSY after
+/// all retries or if the firmware returns a hard-failure status.
+fn query_level(
+    handle: &DeviceHandle<Context>,
+    transaction_id: u8,
+    sleep: &std::time::Duration,
+    timeout: std::time::Duration,
+) -> rusb::Result<u8> {
+    let level_query = build_battery_query_payload(transaction_id);
+    for attempt in 1..=3u8 {
+        handle
+            .write_control(0x21, 0x09, 0x0300, 0x00, &level_query, timeout)
+            .inspect_err(|e| eprintln!("[Battery] SET_REPORT (level) failed: {e:?}"))?;
+        std::thread::sleep(*sleep);
+        let mut resp = [0u8; REPORT_LEN];
+        handle
+            .read_control(0xA1, 0x01, 0x0300, 0x00, &mut resp, timeout)
+            .inspect_err(|e| eprintln!("[Battery] GET_REPORT (level) failed: {e:?}"))?;
+        match validate_response(&resp, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL) {
+            Ok(()) => {
+                let raw = resp[9];
+                let pct = ((raw as u16 * 100) / 255) as u8;
+                println!("[Battery] Level: raw={raw}/255 → {pct}% (attempt {attempt})");
+                return Ok(pct);
+            }
+            Err(false) => {
+                println!("[Battery] BUSY on level query (attempt {attempt}), retrying…");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(true) => {
+                eprintln!("[Battery] Level query failed (bad response status).");
+                return Err(rusb::Error::Io);
+            }
+        }
+    }
+    eprintln!("[Battery] Level query BUSY after 3 attempts.");
+    Err(rusb::Error::Io)
+}
+
 /// Queries the physical device for its current battery level and charging status.
 ///
 /// Protocol (confirmed from `razercommon.c → razer_get_usb_response`):
@@ -143,49 +184,38 @@ pub fn query_battery(
     let sleep = std::time::Duration::from_micros(wait_us);
 
     // ── Battery level ─────────────────────────────────────────────────────────
-    // Retry up to 3 times when the firmware returns STATUS_BUSY (0x01).
-    // The reference driver (razermouse_driver.c) ignores BUSY with a "TODO",
-    // but in practice a brief 10ms extra wait and retry is enough.
+    // Dongle+cable: when both 0x00B0 (dongle) and 0x00AF (wired) are present
+    // the dongle firmware may return a valid SUCCESSFUL response but with 0 for
+    // the level (the mouse switches power source to USB and stops reporting
+    // internal cell level via the wireless HID channel). Fall back to the wired
+    // interface (0x00AF) which keeps tracking the battery correctly.
     let percent = {
-        let level_query = build_battery_query_payload(transaction_id);
-        let mut result: Option<u8> = None;
+        let dongle_pct = query_level(&handle, transaction_id, &sleep, timeout)?;
 
-        for attempt in 1..=3u8 {
-            handle
-                .write_control(0x21, 0x09, 0x0300, 0x00, &level_query, timeout)
-                .inspect_err(|e| eprintln!("[Battery] SET_REPORT (level) failed: {e:?}"))?;
-
-            std::thread::sleep(sleep);
-
-            let mut level_response = [0u8; REPORT_LEN];
-            handle
-                .read_control(0xA1, 0x01, 0x0300, 0x00, &mut level_response, timeout)
-                .inspect_err(|e| eprintln!("[Battery] GET_REPORT (level) failed: {e:?}"))?;
-
-            match validate_response(&level_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL) {
-                Ok(()) => {
-                    let raw = level_response[9];
-                    let pct = ((raw as u16 * 100) / 255) as u8;
-                    println!("[Battery] Level: raw={raw}/255 → {pct}% (attempt {attempt})");
-                    result = Some(pct);
-                    break;
+        if dongle_pct == 0 {
+            if let ConnectionType::Dongle = connection_type {
+                if detect_connected_pid(&[COBRA_PRO_WIRED_PID]).is_some() {
+                    println!(
+                        "[Battery] Dongle returned 0%; trying wired interface (0x{COBRA_PRO_WIRED_PID:04x}) for level…"
+                    );
+                    match open_razer_device(COBRA_PRO_WIRED_PID)
+                        .and_then(|h| query_level(&h, transaction_id, &sleep, timeout))
+                    {
+                        Ok(wired_pct) if wired_pct > 0 => {
+                            println!("[Battery] Wired interface returned {wired_pct}% — using this.");
+                            wired_pct
+                        }
+                        _ => dongle_pct,
+                    }
+                } else {
+                    dongle_pct
                 }
-                Err(false) => {
-                    // BUSY — wait a little longer and retry
-                    println!("[Battery] BUSY on level query (attempt {attempt}), retrying…");
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(true) => {
-                    eprintln!("[Battery] Level query failed (bad response status).");
-                    return Err(rusb::Error::Io);
-                }
+            } else {
+                dongle_pct
             }
+        } else {
+            dongle_pct
         }
-
-        result.ok_or_else(|| {
-            eprintln!("[Battery] Level query BUSY after 3 attempts.");
-            rusb::Error::Io
-        })?
     };
 
     // ── Charging status ───────────────────────────────────────────────────────
