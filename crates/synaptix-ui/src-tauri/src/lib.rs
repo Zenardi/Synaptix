@@ -226,42 +226,15 @@ async fn set_mic_mute(_device_id: String, _muted: bool) -> Result<bool, String> 
 /// proprietary USB commands. We discover the Razer audio sink at runtime by
 /// parsing `wpctl status` so the node ID (which changes across reboots) is never
 /// hard-coded.
+///
+/// Uses the absolute path `/usr/bin/wpctl` because Tauri's subprocess environment
+/// may not include `/usr/bin` in PATH.
 #[tauri::command]
 async fn set_volume(_device_id: String, level: u8) -> Result<bool, String> {
     let level = level.min(100);
-
-    // Discover the PipeWire node ID for the Razer stereo output sink.
-    let status = tokio::process::Command::new("wpctl")
-        .arg("status")
-        .output()
-        .await
-        .map_err(|e| format!("[set_volume] failed to run wpctl: {e}"))?;
-
-    let stdout = String::from_utf8_lossy(&status.stdout);
-
-    // Lines inside the Sinks section look like:
-    //   "│  *   69. Razer Kraken V4 Pro Stereo          [vol: 0.80]"
-    // We pick the stereo sink (not Mono) for the headphone output.
-    let node_id = stdout
-        .lines()
-        .find(|l| {
-            let low = l.to_lowercase();
-            (low.contains("razer") || low.contains("kraken"))
-                && low.contains("stereo")
-                && !low.contains("source")
-        })
-        .and_then(|line| {
-            // Extract the first run of digits (the node ID).
-            line.split_whitespace()
-                .find_map(|tok| tok.trim_end_matches('.').parse::<u32>().ok())
-        })
-        .ok_or_else(|| {
-            "[set_volume] Razer Kraken stereo sink not found in wpctl status".to_string()
-        })?;
-
-    // wpctl accepts percentages: "wpctl set-volume <id> <pct>%"
+    let node_id = find_razer_stereo_node_id().await?;
     let vol_arg = format!("{level}%");
-    let result = tokio::process::Command::new("wpctl")
+    let result = tokio::process::Command::new("/usr/bin/wpctl")
         .args(["set-volume", &node_id.to_string(), &vol_arg])
         .status()
         .await
@@ -276,6 +249,64 @@ async fn set_volume(_device_id: String, level: u8) -> Result<bool, String> {
 
     eprintln!("[set_volume] node={node_id} → {level}%");
     Ok(true)
+}
+
+/// Tauri IPC command: reads the current headset output volume (0–100) from PipeWire.
+///
+/// Used by the frontend to initialize the volume slider from the real system state
+/// so the slider position always matches what the OS is actually outputting.
+#[tauri::command]
+async fn get_volume(_device_id: String) -> Result<u8, String> {
+    let node_id = find_razer_stereo_node_id().await?;
+    let output = tokio::process::Command::new("/usr/bin/wpctl")
+        .args(["get-volume", &node_id.to_string()])
+        .output()
+        .await
+        .map_err(|e| format!("[get_volume] wpctl get-volume failed: {e}"))?;
+
+    // Output format: "Volume: 0.47\n"  (may also contain "[MUTED]")
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let vol_f: f32 = stdout
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("[get_volume] could not parse wpctl output: {stdout:?}"))?;
+
+    // Clamp to 0–100 and round to nearest integer.
+    Ok((vol_f * 100.0).round().clamp(0.0, 100.0) as u8)
+}
+
+/// Discovers the PipeWire node ID for the Razer Kraken stereo output sink by
+/// parsing `wpctl status`. The node ID is not stable across reboots, so it must
+/// be looked up each time.
+async fn find_razer_stereo_node_id() -> Result<u32, String> {
+    let status = tokio::process::Command::new("/usr/bin/wpctl")
+        .arg("status")
+        .output()
+        .await
+        .map_err(|e| format!("[wpctl] failed to run wpctl status: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&status.stdout);
+
+    // Lines inside the Sinks section look like:
+    //   "│  *   69. Razer Kraken V4 Pro Stereo          [vol: 0.80]"
+    // We pick the stereo sink (not Mono) for the headphone output.
+    stdout
+        .lines()
+        .find(|l| {
+            let low = l.to_lowercase();
+            (low.contains("razer") || low.contains("kraken"))
+                && low.contains("stereo")
+                && !low.contains("source")
+        })
+        .and_then(|line| {
+            line.split_whitespace()
+                .find_map(|tok| tok.trim_end_matches('.').parse::<u32>().ok())
+        })
+        .ok_or_else(|| {
+            "Razer Kraken stereo sink not found in wpctl status — is the headset connected?"
+                .to_string()
+        })
 }
 
 /// Background task: subscribes to the daemon's `BatteryChanged` D-Bus signal
@@ -417,6 +448,7 @@ pub fn run() {
             set_thx_spatial,
             set_mic_mute,
             set_volume,
+            get_volume,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

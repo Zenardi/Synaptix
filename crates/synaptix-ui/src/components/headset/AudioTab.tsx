@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ToggleSwitch from "../ToggleSwitch";
 
@@ -10,10 +10,20 @@ interface Props {
 export default function AudioTab({ deviceId, pid }: Props) {
   const [thxEnabled, setThxEnabled] = useState(false);
   const [sidetone, setSidetone] = useState(50);
-  const [volume, setVolume] = useState(50);
+  const [volume, setVolume] = useState<number | null>(null); // null = loading
   const [volumeError, setVolumeError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const volumeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Read actual system volume on mount so the slider starts in the right position.
+  useEffect(() => {
+    invoke<number>("get_volume", { deviceId })
+      .then((v) => setVolume(Math.round(v)))
+      .catch((err) => {
+        console.warn("[AudioTab] get_volume failed:", err);
+        setVolume(50); // sensible fallback
+      });
+  }, [deviceId]);
 
   const handleThx = (next: boolean) => {
     setThxEnabled(next);
@@ -50,7 +60,9 @@ export default function AudioTab({ deviceId, pid }: Props) {
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-white">Output Volume</p>
-          <span className="text-xs font-mono text-razer-green">{volume}%</span>
+          <span className="text-xs font-mono text-razer-green">
+            {volume === null ? "…" : `${volume}%`}
+          </span>
         </div>
         <p className="text-[11px] text-gray-500 -mt-1">
           Headset speaker volume via PipeWire
@@ -59,9 +71,10 @@ export default function AudioTab({ deviceId, pid }: Props) {
           type="range"
           min={0}
           max={100}
-          value={volume}
+          value={volume ?? 50}
+          disabled={volume === null}
           onChange={(e) => handleVolume(Number(e.target.value))}
-          className="w-full accent-razer-green cursor-pointer"
+          className="w-full accent-razer-green cursor-pointer disabled:opacity-40"
           aria-label="Output volume"
         />
         <div className="flex justify-between text-[10px] text-gray-600">
@@ -69,9 +82,7 @@ export default function AudioTab({ deviceId, pid }: Props) {
           <span>Max</span>
         </div>
         {volumeError && (
-          <p className="text-[11px] text-red-400 mt-1">
-            ⚠ {volumeError}
-          </p>
+          <p className="text-[11px] text-red-400 mt-1">⚠ {volumeError}</p>
         )}
       </div>
 
@@ -116,3 +127,4 @@ export default function AudioTab({ deviceId, pid }: Props) {
     </div>
   );
 }
+
