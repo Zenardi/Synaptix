@@ -18,6 +18,10 @@ trait SynaptixDaemon {
 
     fn set_dpi(&self, device_id: &str, x: u16, y: u16) -> zbus::Result<bool>;
 
+    fn set_haptic_intensity(&self, device_id: &str, level: u8) -> zbus::Result<bool>;
+
+    fn set_sidetone(&self, device_id: &str, level: u8) -> zbus::Result<bool>;
+
     /// Signal emitted by the daemon whenever a device's battery state changes.
     #[zbus(signal)]
     fn battery_changed(&self, device_id: &str, new_state_json: &str) -> zbus::Result<()>;
@@ -160,6 +164,62 @@ async fn set_device_dpi(device_id: String, dpi: u16) -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Tauri IPC command: sets haptic feedback intensity (0 = off, 1–100 = intensity).
+#[tauri::command]
+async fn set_haptic_intensity(device_id: String, level: u8) -> Result<bool, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| e.to_string())?;
+    let proxy = SynaptixDaemonProxy::new(&conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    proxy
+        .set_haptic_intensity(&device_id, level)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tauri IPC command: enables or disables haptic feedback.
+/// Disabling sends intensity 0; enabling is a no-op (intensity slider drives the level).
+#[tauri::command]
+async fn set_haptics_enabled(device_id: String, enabled: bool) -> Result<bool, String> {
+    if !enabled {
+        return set_haptic_intensity(device_id, 0).await;
+    }
+    Ok(true)
+}
+
+/// Tauri IPC command: sets the sidetone volume (0–100) via the daemon.
+#[tauri::command]
+async fn set_sidetone(device_id: String, level: u8) -> Result<bool, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| e.to_string())?;
+    let proxy = SynaptixDaemonProxy::new(&conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    proxy
+        .set_sidetone(&device_id, level)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tauri IPC command: stub for THX Spatial Audio toggle.
+/// ⚠️  No USB protocol yet — requires Wireshark capture.
+#[tauri::command]
+async fn set_thx_spatial(_device_id: String, _enabled: bool) -> Result<bool, String> {
+    eprintln!("[set_thx_spatial] stub — no USB protocol implemented yet");
+    Ok(false)
+}
+
+/// Tauri IPC command: stub for mic mute toggle.
+/// ⚠️  No USB protocol yet — requires Wireshark capture.
+#[tauri::command]
+async fn set_mic_mute(_device_id: String, _muted: bool) -> Result<bool, String> {
+    eprintln!("[set_mic_mute] stub — no USB protocol implemented yet");
+    Ok(false)
+}
+
 /// Background task: subscribes to the daemon's `BatteryChanged` D-Bus signal
 /// and forwards each event to the React frontend via Tauri's event system.
 async fn listen_for_battery_signals(
@@ -293,6 +353,11 @@ pub fn run() {
             get_device_state,
             set_device_lighting,
             set_device_dpi,
+            set_haptic_intensity,
+            set_haptics_enabled,
+            set_sidetone,
+            set_thx_spatial,
+            set_mic_mute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

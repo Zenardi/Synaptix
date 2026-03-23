@@ -292,21 +292,26 @@ impl DeviceManager {
 
     /// Sets the sidetone volume for a headset device.
     ///
-    /// `pid` is the USB product ID of the target device (e.g. `0x0568` for
-    /// Kraken V4 Pro). `level` is clamped to 0–100. Returns `false` if the PID
-    /// does not advertise sidetone support.
+    /// `device_id` must match a registered device. `level` is clamped to 0–100.
+    /// Returns `false` if the device is unknown or doesn't advertise sidetone support.
     ///
     /// ⚠️  USB payload based on Kraken V3 baseline — Wireshark verification needed
     ///     for Kraken V4 Pro (PID 0x0568).
-    async fn set_sidetone(&mut self, pid: u16, level: u8) -> bool {
-        log::info!("[SetSidetone] request — PID={pid:#06x} level={level}");
+    async fn set_sidetone(&mut self, device_id: String, level: u8) -> bool {
+        log::info!("[SetSidetone] request — device={device_id} level={level}");
+
+        let Some(device) = self.devices.get(&device_id) else {
+            log::warn!("[SetSidetone] rejected — unknown device ID: {device_id}");
+            return false;
+        };
+        let pid = device.product_id.usb_pid();
 
         // Guard: only dispatch if the registry advertises Sidetone capability.
         let has_sidetone = get_device_profile(pid)
             .is_some_and(|p| p.capabilities.contains(&DeviceCapability::Sidetone));
         if !has_sidetone {
             log::warn!(
-                "[SetSidetone] rejected — PID={pid:#06x} does not advertise Sidetone capability"
+                "[SetSidetone] rejected — PID={pid:#06x} ({device_id}) does not advertise Sidetone capability"
             );
             return false;
         }
@@ -322,15 +327,15 @@ impl DeviceManager {
 
         match result {
             Ok(Ok(())) => {
-                log::info!("[SetSidetone] USB transfer succeeded for PID={pid:#06x}");
+                log::info!("[SetSidetone] USB transfer succeeded for {device_id}");
                 true
             }
             Ok(Err(e)) => {
-                log::error!("[SetSidetone] USB transfer failed for PID={pid:#06x}: {e:?}");
+                log::error!("[SetSidetone] USB transfer failed for {device_id}: {e:?}");
                 false
             }
             Err(e) => {
-                log::error!("[SetSidetone] spawn_blocking panicked for PID={pid:#06x}: {e:?}");
+                log::error!("[SetSidetone] spawn_blocking panicked for {device_id}: {e:?}");
                 false
             }
         }
@@ -338,29 +343,33 @@ impl DeviceManager {
 
     /// Sets the haptic feedback intensity for a HyperSense-equipped headset.
     ///
-    /// `pid` is the USB product ID of the target device. `level` 0 disables
-    /// haptics; 1–100 sets intensity. Returns `false` if the PID does not
+    /// `device_id` must match a registered device. `level` 0 disables haptics;
+    /// 1–100 sets intensity. Returns `false` if the device is unknown or doesn't
     /// advertise haptic feedback support.
     ///
     /// ⚠️  USB payload based on Kraken V3 HyperSense baseline — Wireshark verification
     ///     needed for Kraken V4 Pro (PID 0x0568).
-    async fn set_haptic_intensity(&mut self, pid: u16, level: u8) -> bool {
-        log::info!("[SetHapticIntensity] request — PID={pid:#06x} level={level}");
+    async fn set_haptic_intensity(&mut self, device_id: String, level: u8) -> bool {
+        log::info!("[SetHapticIntensity] request — device={device_id} level={level}");
+
+        let Some(device) = self.devices.get(&device_id) else {
+            log::warn!("[SetHapticIntensity] rejected — unknown device ID: {device_id}");
+            return false;
+        };
+        let pid = device.product_id.usb_pid();
 
         // Guard: only dispatch if the registry advertises HapticFeedback capability.
         let has_haptics = get_device_profile(pid)
             .is_some_and(|p| p.capabilities.contains(&DeviceCapability::HapticFeedback));
         if !has_haptics {
             log::warn!(
-                "[SetHapticIntensity] rejected — PID={pid:#06x} does not advertise HapticFeedback capability"
+                "[SetHapticIntensity] rejected — PID={pid:#06x} ({device_id}) does not advertise HapticFeedback capability"
             );
             return false;
         }
 
         let clamped = level.min(100);
-        log::info!(
-            "[SetHapticIntensity] dispatching — PID={pid:#06x} level={clamped}"
-        );
+        log::info!("[SetHapticIntensity] dispatching — PID={pid:#06x} level={clamped}");
 
         let result = tokio::task::spawn_blocking(move || {
             if pid == 0x0568 {
@@ -379,19 +388,15 @@ impl DeviceManager {
 
         match result {
             Ok(Ok(())) => {
-                log::info!("[SetHapticIntensity] USB transfer succeeded for PID={pid:#06x}");
+                log::info!("[SetHapticIntensity] USB transfer succeeded for {device_id}");
                 true
             }
             Ok(Err(e)) => {
-                log::error!(
-                    "[SetHapticIntensity] USB transfer failed for PID={pid:#06x}: {e:?}"
-                );
+                log::error!("[SetHapticIntensity] USB transfer failed for {device_id}: {e:?}");
                 false
             }
             Err(e) => {
-                log::error!(
-                    "[SetHapticIntensity] spawn_blocking panicked for PID={pid:#06x}: {e:?}"
-                );
+                log::error!("[SetHapticIntensity] spawn_blocking panicked for {device_id}: {e:?}");
                 false
             }
         }
