@@ -1025,7 +1025,7 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
 
     // The Kraken V4 Pro Hub (0x0568) is a composite device; proprietary HID
     // commands must be routed to interface 3 (not the default audio interface 0).
-    let control_interface: u8 = if product_id == 0x0568 { 3 } else { 0 };
+    let control_interface: u8 = if product_id == 0x0568 { 4 } else { 0 };
 
     Some(DeviceProfile {
         name: name.to_string(),
@@ -1115,7 +1115,8 @@ mod tests {
         assert_eq!(profile.name, "Razer Kraken V4 Pro");
         assert_eq!(profile.device_type, DeviceType::Audio);
         // Hub requires interface 3 for proprietary HID commands.
-        assert_eq!(profile.control_interface, 3);
+        // Wireshark confirmed: wIndex = 0x0004 (interface 4) for haptic payloads.
+        assert_eq!(profile.control_interface, 4);
     }
 
     #[test]
