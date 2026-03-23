@@ -20,15 +20,27 @@ type HapticLevel = (typeof HAPTIC_LEVELS)[number]["value"];
 
 export default function HapticsTab({ deviceId, pid }: Props) {
   const [activeLevel, setActiveLevel] = useState<HapticLevel>(0);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleLevel = (value: HapticLevel) => {
+    if (pending) return;
     setActiveLevel(value);
+    setError(null);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      invoke("set_haptic_intensity", { deviceId, pid, level: value }).catch(
-        (err) => console.warn("[HapticsTab] set_haptic_intensity error:", err),
-      );
+      setPending(true);
+      invoke<boolean>("set_haptic_intensity", { deviceId, pid, level: value })
+        .then((ok) => {
+          if (!ok) setError("Daemon rejected command — check device is detected");
+        })
+        .catch((err) => {
+          setError(`Command failed: ${err}`);
+          // Revert visual state on error so it doesn't show a false active level
+          setActiveLevel((prev) => prev);
+        })
+        .finally(() => setPending(false));
     }, 150);
   };
 
@@ -50,11 +62,13 @@ export default function HapticsTab({ deviceId, pid }: Props) {
             <button
               key={label}
               onClick={() => handleLevel(value)}
+              disabled={pending}
               className={[
                 "flex flex-col items-center gap-1.5 py-4 rounded-xl border transition-all",
                 isActive
                   ? "bg-razer-green/10 border-razer-green text-razer-green shadow-[0_0_12px_#44d62c33]"
                   : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:text-white",
+                pending ? "opacity-50 cursor-wait" : "cursor-pointer",
               ].join(" ")}
               aria-pressed={isActive}
               aria-label={`Haptic level: ${label}`}
@@ -81,12 +95,20 @@ export default function HapticsTab({ deviceId, pid }: Props) {
         })}
       </div>
 
-      {/* Status line */}
-      <p className="text-[11px] text-gray-500">
-        {activeLevel === 0
-          ? "Haptic feedback disabled"
-          : `Intensity: ${activeLevel}/100 — matches headset side-button cycle`}
-      </p>
+      {/* Status / error line */}
+      {error ? (
+        <p className="text-[11px] text-red-400 flex items-center gap-1">
+          <span>⚠</span> {error}
+        </p>
+      ) : (
+        <p className="text-[11px] text-gray-500">
+          {pending
+            ? "Sending…"
+            : activeLevel === 0
+              ? "Haptic feedback disabled"
+              : `Intensity: ${activeLevel}/100 — matches headset side-button cycle`}
+        </p>
+      )}
     </div>
   );
 }
