@@ -363,8 +363,17 @@ impl DeviceManager {
         );
 
         let result = tokio::task::spawn_blocking(move || {
-            let payload = crate::razer_protocol::build_set_haptic_payload(clamped);
-            crate::usb_backend::send_control_transfer(pid, &payload)
+            if pid == 0x0568 {
+                // Kraken V4 Pro OLED Hub: 64-byte proprietary HID report on
+                // Interface 4, wValue=0x0202. Wireshark-verified protocol path.
+                let payload = crate::razer_protocol::build_haptic_report(clamped);
+                crate::usb_backend::send_haptic_report(pid, &payload)
+            } else {
+                // Legacy 90-byte Razer protocol for Kraken V3 HyperSense and
+                // other HapticFeedback-capable headsets.
+                let payload = crate::razer_protocol::build_set_haptic_payload(clamped);
+                crate::usb_backend::send_control_transfer(pid, &payload)
+            }
         })
         .await;
 

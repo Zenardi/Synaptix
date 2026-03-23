@@ -1,6 +1,7 @@
 use crate::razer_protocol::{
     build_battery_query_payload, build_charging_query_payload, validate_response,
-    CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, RAZER_VID, REPORT_LEN,
+    CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN,
+    RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
@@ -122,6 +123,62 @@ pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rus
     }
 
     println!("[USB] Control transfer complete.");
+    Ok(())
+}
+
+/// Sends a 64-byte proprietary HID report to the Kraken V4 Pro OLED Hub.
+///
+/// This is a completely separate protocol path from the legacy 90-byte Razer
+/// HID reports. Wireshark-verified Setup Packet: `21 09 00 03 04 00 40 00`.
+///
+/// ```text
+/// bmRequestType = 0x21   (HOST→DEVICE | CLASS | INTERFACE)
+/// bRequest      = 0x09   (HID SET_REPORT)
+/// wValue        = 0x0202 (Output Report 2)
+/// wIndex        = 0x0004 (Interface 4, from registry)
+/// wLength       = 64
+/// timeout       = 1 000 ms
+/// ```
+///
+/// Returns `Ok(())` on success. `rusb::Error::Timeout` means the firmware did
+/// not ACK within 1 s — likely a wrong interface or incorrect wValue.
+/// `rusb::Error::Pipe` (stall) means the firmware rejected the request type.
+pub fn send_haptic_report(
+    product_id: u16,
+    payload: &[u8; HAPTIC_REPORT_LEN],
+) -> rusb::Result<()> {
+    let (handle, iface) = open_razer_device(product_id)?;
+    let timeout = std::time::Duration::from_millis(1_000);
+
+    let n = match handle.write_control(0x21, 0x09, 0x0202, iface as u16, payload, timeout) {
+        Ok(n) => n,
+        Err(rusb::Error::Timeout) => {
+            eprintln!(
+                "[USB] Haptic SET_REPORT timed out for PID={product_id:#06x} — \
+                 verify wIndex={iface} and wValue=0x0202"
+            );
+            return Err(rusb::Error::Timeout);
+        }
+        Err(rusb::Error::Pipe) => {
+            eprintln!(
+                "[USB] Haptic SET_REPORT stalled (EPIPE) for PID={product_id:#06x} — \
+                 firmware rejected the request type or report ID"
+            );
+            return Err(rusb::Error::Pipe);
+        }
+        Err(e) => {
+            eprintln!("[USB] Haptic write_control failed: {e:?}");
+            return Err(e);
+        }
+    };
+
+    println!("[USB] Haptic write_control returned {n} bytes (expected {HAPTIC_REPORT_LEN}).");
+    if n != HAPTIC_REPORT_LEN {
+        eprintln!("[USB] Short write — expected {HAPTIC_REPORT_LEN}, got {n}.");
+        return Err(rusb::Error::Io);
+    }
+
+    println!("[USB] Haptic control transfer complete.");
     Ok(())
 }
 

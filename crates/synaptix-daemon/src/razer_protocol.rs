@@ -422,6 +422,57 @@ pub fn build_set_haptic_payload(level: u8) -> [u8; REPORT_LEN] {
     buf
 }
 
+// ── Kraken V4 Pro OLED Hub — 64-byte proprietary HID report ──────────────────
+//
+// Wireshark capture on Windows confirmed the Kraken V4 Pro Hub (PID 0x0568)
+// uses a 64-byte report on Interface 4, NOT the legacy 90-byte Razer protocol.
+//
+// Verified USB Setup Packet: 21 09 00 03 04 00 5a 00
+//   bmRequestType = 0x21 (HOST→DEVICE | CLASS | INTERFACE)
+//   bRequest      = 0x09 (HID SET_REPORT)
+//   wValue        = 0x0202 (Output Report ID 2)
+//   wIndex        = 0x0004 (Interface 4)
+//   wLength       = 64
+
+/// Length of the Kraken V4 Pro Hub proprietary HID report (bytes).
+pub const HAPTIC_REPORT_LEN: usize = 64;
+
+/// Computes the XOR checksum for the 64-byte haptic report.
+///
+/// Protocol: XOR of bytes `[1..62]`, stored at index `62`.
+/// Byte `63` is the terminator and is left as `0x00`.
+fn calculate_haptic_checksum(buf: &mut [u8; HAPTIC_REPORT_LEN]) {
+    buf[62] = buf[1..62].iter().fold(0u8, |acc, &b| acc ^ b);
+}
+
+/// Builds a 64-byte HID report that sets the Kraken V4 Pro haptic intensity.
+///
+/// Wireshark-verified layout (Interface 4, wValue `0x0202`):
+///
+/// ```text
+/// Byte  0    Report ID      = 0x21
+/// Byte  1    Command Class  = 0x0F
+/// Byte  2    Command ID     = 0x03
+/// Byte  3    Routing Byte   = 0x80  (addressed to headset DSP)
+/// Bytes 4-27 reserved       = 0x00
+/// Byte 28    Frame Start    = 0x31  (Sensa HD frame marker)
+/// Byte 29    Intensity      = 0x00-0x64  (0 disables, 1-100 sets level)
+/// Bytes 30-61 reserved      = 0x00
+/// Byte 62    CRC            = XOR(bytes[1..62])
+/// Byte 63    Terminator     = 0x00
+/// ```
+pub fn build_haptic_report(intensity: u8) -> [u8; HAPTIC_REPORT_LEN] {
+    let mut buf = [0u8; HAPTIC_REPORT_LEN];
+    buf[0] = 0x21; // Report ID
+    buf[1] = 0x0F; // Command Class
+    buf[2] = 0x03; // Command ID
+    buf[3] = 0x80; // Routing Byte — targets headset DSP
+    buf[28] = 0x31; // Sensa HD Frame Start marker
+    buf[29] = intensity; // Intensity (0 = off, 1-100 = strength)
+    calculate_haptic_checksum(&mut buf);
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,5 +841,46 @@ mod tests {
             recomputed, payload[88],
             "XOR checksum is not mathematically valid"
         );
+    }
+
+    // ── Kraken V4 Pro OLED Hub — 64-byte haptic report ───────────────────────
+
+    /// Header bytes, frame-start marker, intensity placement, and CRC for the
+    /// Wireshark-verified 64-byte haptic report at intensity=75 (0x4B).
+    #[test]
+    fn test_haptic_report_v4_pro_layout() {
+        let report = build_haptic_report(75);
+
+        assert_eq!(report.len(), 64, "report must be exactly 64 bytes");
+        assert_eq!(report[0], 0x21, "Report ID must be 0x21");
+        assert_eq!(report[1], 0x0F, "Command Class must be 0x0F");
+        assert_eq!(report[2], 0x03, "Command ID must be 0x03");
+        assert_eq!(report[3], 0x80, "Routing Byte must be 0x80");
+        assert_eq!(report[28], 0x31, "Sensa HD Frame Start must be 0x31");
+        assert_eq!(report[29], 75, "Intensity must equal the argument");
+
+        // CRC: XOR of bytes [1..62] stored at index 62.
+        let expected_crc: u8 = report[1..62].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(report[62], expected_crc, "CRC mismatch");
+        assert_eq!(report[63], 0x00, "Terminator must be 0x00");
+    }
+
+    /// Intensity 0 must disable haptics — all intensity bytes zero, valid CRC.
+    #[test]
+    fn test_haptic_report_v4_pro_disable() {
+        let report = build_haptic_report(0);
+        assert_eq!(report[29], 0x00, "Intensity must be 0x00 for disable");
+        let expected_crc: u8 = report[1..62].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(report[62], expected_crc, "CRC must still be valid when disabled");
+    }
+
+    /// Intensity is clamped by the caller (device_manager), but the builder
+    /// must faithfully encode whatever byte it receives — including 0x64 (100).
+    #[test]
+    fn test_haptic_report_v4_pro_max_intensity() {
+        let report = build_haptic_report(100);
+        assert_eq!(report[29], 0x64, "Max intensity should encode as 0x64");
+        let expected_crc: u8 = report[1..62].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(report[62], expected_crc, "CRC must be valid at max intensity");
     }
 }
