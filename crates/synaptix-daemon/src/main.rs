@@ -156,6 +156,40 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         },
     );
 
+    // Probe for known headsets on the USB bus.
+    // 0x0568 = Kraken V4 Pro OLED Hub (always present when the headset is plugged in).
+    const HEADSET_PIDS: &[(u16, RazerProductId)] = &[
+        (0x0568, RazerProductId::KrakenV4Pro),
+    ];
+    let detected_headsets: Vec<(u16, RazerProductId)> = tokio::task::spawn_blocking(|| {
+        HEADSET_PIDS
+            .iter()
+            .filter(|(pid, _)| usb_backend::detect_connected_pid(&[*pid]).is_some())
+            .map(|(pid, prod)| (*pid, prod.clone()))
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+
+    for (pid, product_id) in detected_headsets {
+        let Some(profile) = get_device_profile(pid) else {
+            continue;
+        };
+        let device_id = format!("kraken-v4-pro-{pid:04x}");
+        log::info!("[Detect] {} on USB: PID={pid:#06x}", profile.name);
+        manager.add_device(
+            device_id,
+            RazerDevice {
+                name: profile.name,
+                product_id,
+                // Wired USB hub — no battery to query; use Full as a neutral placeholder.
+                battery_state: BatteryState::Full,
+                capabilities: profile.capabilities,
+                connection_type: ConnectionType::Wired,
+            },
+        );
+    }
+
     // Auto-apply any persisted settings (lighting, DPI) to hardware at startup.
     tokio::task::block_in_place(|| manager.apply_saved_settings());
 
