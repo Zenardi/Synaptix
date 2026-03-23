@@ -220,6 +220,64 @@ async fn set_mic_mute(_device_id: String, _muted: bool) -> Result<bool, String> 
     Ok(false)
 }
 
+/// Tauri IPC command: sets headset output volume (0–100) via PipeWire (`wpctl`).
+///
+/// Volume on a USB Audio Class device is managed by the OS audio stack, not by
+/// proprietary USB commands. We discover the Razer audio sink at runtime by
+/// parsing `wpctl status` so the node ID (which changes across reboots) is never
+/// hard-coded.
+#[tauri::command]
+async fn set_volume(_device_id: String, level: u8) -> Result<bool, String> {
+    let level = level.min(100);
+
+    // Discover the PipeWire node ID for the Razer stereo output sink.
+    let status = tokio::process::Command::new("wpctl")
+        .arg("status")
+        .output()
+        .await
+        .map_err(|e| format!("[set_volume] failed to run wpctl: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&status.stdout);
+
+    // Lines inside the Sinks section look like:
+    //   "│  *   69. Razer Kraken V4 Pro Stereo          [vol: 0.80]"
+    // We pick the stereo sink (not Mono) for the headphone output.
+    let node_id = stdout
+        .lines()
+        .find(|l| {
+            let low = l.to_lowercase();
+            (low.contains("razer") || low.contains("kraken"))
+                && low.contains("stereo")
+                && !low.contains("source")
+        })
+        .and_then(|line| {
+            // Extract the first run of digits (the node ID).
+            line.split_whitespace()
+                .find_map(|tok| tok.trim_end_matches('.').parse::<u32>().ok())
+        })
+        .ok_or_else(|| {
+            "[set_volume] Razer Kraken stereo sink not found in wpctl status".to_string()
+        })?;
+
+    // wpctl accepts percentages: "wpctl set-volume <id> <pct>%"
+    let vol_arg = format!("{level}%");
+    let result = tokio::process::Command::new("wpctl")
+        .args(["set-volume", &node_id.to_string(), &vol_arg])
+        .status()
+        .await
+        .map_err(|e| format!("[set_volume] wpctl set-volume failed: {e}"))?;
+
+    if !result.success() {
+        return Err(format!(
+            "[set_volume] wpctl exited with status {}",
+            result.code().unwrap_or(-1)
+        ));
+    }
+
+    eprintln!("[set_volume] node={node_id} → {level}%");
+    Ok(true)
+}
+
 /// Background task: subscribes to the daemon's `BatteryChanged` D-Bus signal
 /// and forwards each event to the React frontend via Tauri's event system.
 async fn listen_for_battery_signals(
@@ -358,6 +416,7 @@ pub fn run() {
             set_sidetone,
             set_thx_spatial,
             set_mic_mute,
+            set_volume,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

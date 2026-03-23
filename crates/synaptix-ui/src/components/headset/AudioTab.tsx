@@ -10,7 +10,10 @@ interface Props {
 export default function AudioTab({ deviceId, pid }: Props) {
   const [thxEnabled, setThxEnabled] = useState(false);
   const [sidetone, setSidetone] = useState(50);
+  const [volume, setVolume] = useState(50);
+  const [volumeError, setVolumeError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const volumeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleThx = (next: boolean) => {
     setThxEnabled(next);
@@ -29,8 +32,49 @@ export default function AudioTab({ deviceId, pid }: Props) {
     }, 300);
   };
 
+  const handleVolume = (value: number) => {
+    setVolume(value);
+    setVolumeError(null);
+    if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current);
+    volumeDebounceRef.current = setTimeout(() => {
+      invoke<boolean>("set_volume", { deviceId, level: value }).catch((err) => {
+        console.error("[AudioTab] set_volume error:", err);
+        setVolumeError(String(err));
+      });
+    }, 150);
+  };
+
   return (
     <div className="flex flex-col gap-6">
+      {/* Output Volume */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium text-white">Output Volume</p>
+          <span className="text-xs font-mono text-razer-green">{volume}%</span>
+        </div>
+        <p className="text-[11px] text-gray-500 -mt-1">
+          Headset speaker volume via PipeWire
+        </p>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={volume}
+          onChange={(e) => handleVolume(Number(e.target.value))}
+          className="w-full accent-razer-green cursor-pointer"
+          aria-label="Output volume"
+        />
+        <div className="flex justify-between text-[10px] text-gray-600">
+          <span>Mute</span>
+          <span>Max</span>
+        </div>
+        {volumeError && (
+          <p className="text-[11px] text-red-400 mt-1">
+            ⚠ {volumeError}
+          </p>
+        )}
+      </div>
+
       {/* THX Spatial Audio */}
       <div className="flex items-center justify-between">
         <div>
