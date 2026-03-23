@@ -3,6 +3,7 @@ members = [
     "crates/synaptix-protocol",
     "crates/synaptix-daemon",
     "crates/synaptix-ui/src-tauri",
+    "crates/synaptix-probe",
 ]
 resolver = "2"
 

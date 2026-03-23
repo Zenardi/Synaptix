@@ -992,6 +992,12 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
             false,
         ),
         0x0568 => ("Razer Kraken V4 Pro", DeviceType::Audio, false, false),
+        0x056c => (
+            "Razer Kraken V4 Pro (Main)",
+            DeviceType::Audio,
+            false,
+            false,
+        ),
         0x0F19 => (
             "Razer Kraken Kitty Edition",
             DeviceType::Audio,
@@ -1018,14 +1024,18 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
     }
     // Kraken V4 Pro (both the headset 0x0568 and its USB receiver/hub 0x0567)
     // supports haptics and THX Spatial Audio.
-    if matches!(product_id, 0x0567 | 0x0568) {
+    if matches!(product_id, 0x0567 | 0x0568 | 0x056c) {
         capabilities.push(DeviceCapability::HapticFeedback);
         capabilities.push(DeviceCapability::ThxSpatialAudio);
     }
 
-    // The Kraken V4 Pro Hub (0x0568) is a composite device; proprietary HID
-    // commands must be routed to interface 3 (not the default audio interface 0).
-    let control_interface: u8 = if product_id == 0x0568 { 4 } else { 0 };
+    // The Kraken V4 Pro Hub (0x0568) and main device (0x056c) use a composite
+    // USB configuration; proprietary HID commands must be routed to Interface 4.
+    let control_interface: u8 = if matches!(product_id, 0x0568 | 0x056c) {
+        4
+    } else {
+        0
+    };
 
     Some(DeviceProfile {
         name: name.to_string(),
@@ -1117,6 +1127,22 @@ mod tests {
         // Hub requires interface 3 for proprietary HID commands.
         // Wireshark confirmed: wIndex = 0x0004 (interface 4) for haptic payloads.
         assert_eq!(profile.control_interface, 4);
+    }
+
+    #[test]
+    fn test_registry_resolves_kraken_v4_pro_main() {
+        let profile =
+            get_device_profile(0x056c).expect("Kraken V4 Pro (Main) must be in registry");
+        assert_eq!(profile.name, "Razer Kraken V4 Pro (Main)");
+        assert_eq!(profile.device_type, DeviceType::Audio);
+        assert_eq!(profile.control_interface, 4);
+        assert!(
+            profile
+                .capabilities
+                .iter()
+                .any(|c| matches!(c, DeviceCapability::HapticFeedback)),
+            "Kraken V4 Pro (Main) must have HapticFeedback capability"
+        );
     }
 
     #[test]
