@@ -455,20 +455,29 @@ fn calculate_haptic_checksum(buf: &mut [u8; HAPTIC_REPORT_LEN]) {
 /// Byte  2    Command ID     = 0x03
 /// Byte  3    Routing Byte   = 0x80  (addressed to headset DSP)
 /// Bytes 4-27 reserved       = 0x00
-/// Byte 28    Frame Start    = 0x31  (Sensa HD frame marker)
-/// Byte 29    Intensity      = 0x00-0x64  (0 disables, 1-100 sets level)
+/// Byte 28    Frame Start    = 0x31 when intensity > 0  (Sensa HD active)
+///                           = 0x00 when intensity == 0 (no active frame = disable)
+/// Byte 29    Intensity      = 0x01-0x64 when active; 0x00 when disabled
 /// Bytes 30-61 reserved      = 0x00
 /// Byte 62    CRC            = XOR(bytes[1..62])
 /// Byte 63    Terminator     = 0x00
 /// ```
+///
+/// Note: Sending `buf[28]=0x31, buf[29]=0x00` (intensity zero but frame marker
+/// present) does NOT disable haptics — the firmware keeps processing. The frame
+/// marker must be absent (`0x00`) for the headset to stop haptic output.
 pub fn build_haptic_report(intensity: u8) -> [u8; HAPTIC_REPORT_LEN] {
     let mut buf = [0u8; HAPTIC_REPORT_LEN];
     buf[0] = 0x21; // Report ID
     buf[1] = 0x0F; // Command Class
     buf[2] = 0x03; // Command ID
     buf[3] = 0x80; // Routing Byte — targets headset DSP
-    buf[28] = 0x31; // Sensa HD Frame Start marker
-    buf[29] = intensity; // Intensity (0 = off, 1-100 = strength)
+    if intensity > 0 {
+        buf[28] = 0x31; // Sensa HD Frame Start — only set when active
+        buf[29] = intensity;
+    }
+    // When intensity == 0: buf[28] and buf[29] remain 0x00.
+    // The absence of the 0x31 frame marker signals the DSP to stop haptic output.
     calculate_haptic_checksum(&mut buf);
     buf
 }
@@ -865,10 +874,13 @@ mod tests {
         assert_eq!(report[63], 0x00, "Terminator must be 0x00");
     }
 
-    /// Intensity 0 must disable haptics — all intensity bytes zero, valid CRC.
+    /// Intensity 0 must disable haptics: frame marker (buf[28]) must be absent
+    /// so the headset DSP stops processing. Sending 0x31 with intensity=0 does
+    /// NOT disable — the firmware keeps running at its last firmware level.
     #[test]
     fn test_haptic_report_v4_pro_disable() {
         let report = build_haptic_report(0);
+        assert_eq!(report[28], 0x00, "Frame marker must be absent (0x00) to disable");
         assert_eq!(report[29], 0x00, "Intensity must be 0x00 for disable");
         let expected_crc: u8 = report[1..62].iter().fold(0u8, |acc, &b| acc ^ b);
         assert_eq!(report[62], expected_crc, "CRC must still be valid when disabled");
