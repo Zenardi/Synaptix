@@ -137,6 +137,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     // Push the initial reading to the tray immediately.
     let (pct, charging) = battery_to_pct(&initial_battery);
     tx.send(TrayUpdate {
+        device_id: "cobra-pro".to_string(),
         device_name: cobra_name.clone(),
         percentage: pct,
         is_charging: charging,
@@ -226,9 +227,16 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     // the D-Bus interface to settle, then polls every 5 s.
     if !detected_headsets.is_empty() {
         let headset_conn = conn.clone();
-        let headset_pids: Vec<(u16, String)> = detected_headsets
+        let headset_tx = tx.clone();
+        let headset_pids: Vec<(u16, String, String)> = detected_headsets
             .iter()
-            .map(|(pid, _)| (*pid, format!("kraken-v4-pro-{pid:04x}")))
+            .map(|(pid, prod_id)| {
+                let device_id = format!("kraken-v4-pro-{pid:04x}");
+                let display_name = get_device_profile(*pid)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| format!("{prod_id:?}"));
+                (*pid, device_id, display_name)
+            })
             .collect();
 
         tokio::spawn(async move {
@@ -237,9 +245,10 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
             loop {
-                for (pid, device_id) in &headset_pids {
+                for (pid, device_id, display_name) in &headset_pids {
                     let pid = *pid;
                     let device_id = device_id.clone();
+                    let display_name = display_name.clone();
 
                     let pct_opt =
                         tokio::task::spawn_blocking(move || usb_backend::poll_headset_battery(pid))
@@ -273,6 +282,16 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                     )
                     .await
                     .ok();
+
+                    // Push to system tray so headset battery shows alongside the mouse.
+                    headset_tx
+                        .send(TrayUpdate {
+                            device_id: device_id.clone(),
+                            device_name: display_name,
+                            percentage: pct,
+                            is_charging: false,
+                        })
+                        .ok();
 
                     log::info!("[HeadsetBatt] Poll: {device_id} → {new_state:?}");
                 }
@@ -603,6 +622,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         // Always push to tray so the icon stays current.
         let (pct, charging) = battery_to_pct(&new_state);
         tx.send(TrayUpdate {
+            device_id: "cobra-pro".to_string(),
             device_name: current_name,
             percentage: pct,
             is_charging: charging,
