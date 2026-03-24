@@ -22,6 +22,10 @@ Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https:
 
 ![synaptix](./docs/synaptix.png)
 
+![synaptix](./docs/headset_audio.png)
+
+
+
 ---
 
 ## ⚠️ Project Status
