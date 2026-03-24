@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import ToggleSwitch from "../ToggleSwitch";
 
 interface Props {
   deviceId: string;
@@ -86,19 +85,34 @@ export default function AudioTab({ deviceId, pid }: Props) {
         )}
       </div>
 
-      {/* THX Spatial Audio */}
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium text-white">THX Spatial Audio</p>
-          <p className="text-[11px] text-gray-500 mt-0.5">
-            360° virtual surround sound
-          </p>
+      {/* Audio Mode: Stereo ↔ THX Spatial Audio */}
+      <div className="flex flex-col gap-2">
+        <p className="text-sm font-medium text-white">Audio Mode</p>
+        <p className="text-[11px] text-gray-500 -mt-1">
+          Switch between standard stereo and THX 360° spatial audio
+        </p>
+        <div className="flex rounded-md overflow-hidden border border-white/10 mt-1">
+          <button
+            onClick={() => handleThx(false)}
+            className={`flex-1 py-2 text-xs font-medium transition-colors ${
+              !thxEnabled
+                ? "bg-razer-green text-black"
+                : "bg-white/5 text-gray-400 hover:bg-white/10"
+            }`}
+          >
+            Stereo
+          </button>
+          <button
+            onClick={() => handleThx(true)}
+            className={`flex-1 py-2 text-xs font-medium transition-colors ${
+              thxEnabled
+                ? "bg-razer-green text-black"
+                : "bg-white/5 text-gray-400 hover:bg-white/10"
+            }`}
+          >
+            THX Spatial Audio
+          </button>
         </div>
-        <ToggleSwitch
-          enabled={thxEnabled}
-          onChange={handleThx}
-          label="THX Spatial Audio"
-        />
       </div>
 
       {/* Sidetone Volume */}
