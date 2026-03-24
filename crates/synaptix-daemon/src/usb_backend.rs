@@ -376,6 +376,12 @@ fn query_charging_status(
 /// Attempts to read the Kraken V4 Pro headset battery level using the 64-byte
 /// HID protocol (wValue=0x0202, wIndex=0x0004 on Interface 4).
 ///
+/// **Protocol confirmed from Wireshark** (`haptics_synapse.pcapng`):
+/// - Commands are sent via HID SET_REPORT control transfer (wValue=0x0202)
+/// - Responses come back on the **interrupt IN endpoint 0x84**, NOT via GET_REPORT.
+///   All 26 haptic ACKs in the capture used interrupt IN; resp[6] is always 0x00
+///   (cmd_class is not echoed); resp[7] carries the echoed cmd_id.
+///
 /// Returns `Some(percent)` on success or `None` if the device does not respond
 /// as expected. Callers should record `BatteryState::Unknown` on `None`.
 pub fn query_headset_battery(product_id: u16) -> Option<u8> {
@@ -387,7 +393,7 @@ pub fn query_headset_battery(product_id: u16) -> Option<u8> {
     let timeout = std::time::Duration::from_millis(500);
     let query = build_headset_battery_query();
 
-    // wValue=0x0202 — Report Type 2, Report ID 2 (same as haptic commands)
+    // Send query via HID SET_REPORT (wValue=0x0202 = Report Type 2, Report ID 2)
     handle
         .write_control(0x21, 0x09, 0x0202, iface, &query, timeout)
         .inspect_err(|e| eprintln!("[HeadsetBatt] SET_REPORT failed: {e:?}"))
@@ -395,28 +401,29 @@ pub fn query_headset_battery(product_id: u16) -> Option<u8> {
 
     std::thread::sleep(std::time::Duration::from_millis(10));
 
+    // Read response from interrupt IN endpoint 0x84 (ep=0x04 | direction-IN bit 0x80).
+    // Wireshark confirms all Kraken V4 Pro responses use this path, not GET_REPORT.
     let mut resp = [0u8; HAPTIC_REPORT_LEN];
     handle
-        .read_control(0xA1, 0x01, 0x0202, iface, &mut resp, timeout)
-        .inspect_err(|e| eprintln!("[HeadsetBatt] GET_REPORT failed: {e:?}"))
+        .read_interrupt(0x84, &mut resp, timeout)
+        .inspect_err(|e| eprintln!("[HeadsetBatt] read_interrupt(0x84) failed: {e:?}"))
         .ok()?;
 
-    // byte[1] = status: 0x02 = success, anything else = failure/busy
+    // byte[1] = status: 0x02 = success
     if resp[1] != 0x02 {
         eprintln!(
-            "[HeadsetBatt] Unexpected response status: 0x{:02x} — battery query unsupported?",
+            "[HeadsetBatt] Unexpected response status: 0x{:02x}",
             resp[1]
         );
         return None;
     }
 
-    // Validate that the response echoes the expected command class and ID.
-    // If the device doesn't understand the command it often echoes our payload
-    // or returns zeroes — either way the cmd bytes won't match.
-    if resp[6] != CMD_CLASS_BATTERY || resp[7] != CMD_ID_BATTERY_LEVEL {
+    // byte[6] is always 0x00 in responses (cmd_class not echoed).
+    // byte[7] echoes the cmd_id — verify it matches our battery query.
+    if resp[7] != CMD_ID_BATTERY_LEVEL {
         eprintln!(
-            "[HeadsetBatt] Response cmd mismatch: class=0x{:02x} id=0x{:02x} (expected 0x07/0x80)",
-            resp[6], resp[7]
+            "[HeadsetBatt] Response cmd_id mismatch: 0x{:02x} (expected 0x{CMD_ID_BATTERY_LEVEL:02x})",
+            resp[7]
         );
         return None;
     }
