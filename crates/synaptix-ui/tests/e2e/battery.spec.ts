@@ -7,76 +7,97 @@
  * Prerequisites:
  *   - webkit2gtk-driver installed  (`sudo apt install webkit2gtk-driver`)
  *   - tauri-driver installed        (`cargo install tauri-driver --locked`)
- *   - app built                     (`npm run tauri build`)
- *   - synaptix-daemon running       (optional; some tests work without it)
+ *   - app built                     (`cargo build --release` at workspace root)
  *
  * Run:
  *   npm run test:e2e
+ *
+ * The tests are written to work regardless of whether the synaptix-daemon is
+ * running.  When the daemon is up, device cards are expected.  When it is down
+ * the D-Bus call can take up to ~30 s to timeout before "Daemon unavailable" is
+ * shown; the tests budget 45 s for this.
  */
 
+/** Resolves to true if the "Daemon unavailable" banner is visible, false if
+ * at least one device card appeared, or null if we're still waiting.
+ *
+ * Uses CSS class selectors instead of text-content selectors because
+ * WebKitWebDriver text-content matching (*=text) can be unreliable.
+ */
+async function waitForAppReady(timeoutMs = 45_000): Promise<"error" | "devices" | "empty"> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    // Error banner: App.tsx renders a div.text-red-400 when invoke fails.
+    const errorBanner = await $(".text-red-400");
+    if (await errorBanner.isExisting()) return "error";
+
+    // Device cards: DeviceCard root has .rounded-xl.
+    const cards = await $$(".rounded-xl");
+    if (cards.length > 0) return "devices";
+
+    // "No devices connected." — App.tsx renders this as .text-gray-600.
+    const empty = await $(".text-gray-600");
+    if (await empty.isExisting()) return "empty";
+
+    await browser.pause(500);
+  }
+  throw new Error("App did not reach a stable state within the timeout");
+}
+
 describe("Synaptix E2E — battery display", () => {
+  let appState: "error" | "devices" | "empty";
+
+  before(async () => {
+    // Wait once for the app to settle; individual tests re-use the result.
+    appState = await waitForAppReady(45_000);
+  });
+
   it("app launches and shows the Synaptix heading", async () => {
-    // The heading is rendered unconditionally, daemon not required.
     const heading = await $("h1");
     await expect(heading).toBeExisting();
-    await expect(heading).toHaveText("Synaptix");
+    // Tailwind `uppercase` CSS causes WebKitWebDriver to return the
+    // CSS-transformed text (all caps).
+    await expect(heading).toHaveText("SYNAPTIX");
   });
 
-  it("shows 'Daemon unavailable' when the daemon is not running", async () => {
-    // If no daemon is reachable, App.tsx sets error and renders this message.
-    // Allow up to 10 s for the IPC call to fail.
-    const errorEl = await $("*=Daemon unavailable");
-    await errorEl.waitForExist({ timeout: 10_000 });
-    await expect(errorEl).toBeDisplayed();
+  it("app reaches a stable state: daemon error, devices, or empty list", async () => {
+    // This meta-test asserts the `before` hook settled correctly.
+    expect(["error", "devices", "empty"]).toContain(appState);
   });
 
-  it("device list area is present in the DOM", async () => {
-    // The grid div is rendered unconditionally even when empty.
+  it("shows 'Daemon unavailable' banner when daemon is not reachable", async () => {
+    if (appState !== "error") {
+      console.log(`[skip] Daemon is up (state=${appState}); skipping error-state test`);
+      return;
+    }
+    // The error banner has class text-red-400 (defined in App.tsx).
+    const banner = await $(".text-red-400");
+    await expect(banner).toBeDisplayed();
+    await expect(banner).toHaveTextContaining("Daemon unavailable");
+  });
+
+  it("device grid container is always present in the DOM", async () => {
     const grid = await $(".grid");
     await expect(grid).toBeExisting();
   });
 
   // ── Daemon-dependent tests ─────────────────────────────────────────────────
-  // These require the synaptix-daemon to be running.  They are skipped when
-  // the daemon is unavailable so CI doesn't fail on headless build agents.
+  // Only run when the app successfully retrieved at least one device.
 
   it("shows at least one DeviceCard when daemon is running", async () => {
-    const errorBanner = await $("*=Daemon unavailable");
-    const daemonUp = !(await errorBanner.isExisting());
-    if (!daemonUp) {
-      console.log("Skipping: daemon not running");
+    if (appState !== "devices") {
+      console.log(`[skip] No devices available (state=${appState})`);
       return;
     }
-
-    // Wait for the device cards to appear (invoke resolves asynchronously).
-    await browser.waitUntil(
-      async () => {
-        const cards = await $$(".rounded-xl");
-        return cards.length > 0;
-      },
-      { timeout: 10_000, timeoutMsg: "No device cards appeared" },
-    );
-
     const cards = await $$(".rounded-xl");
     expect(cards.length).toBeGreaterThan(0);
   });
 
   it("battery ring SVG is present when a device card is shown", async () => {
-    const errorBanner = await $("*=Daemon unavailable");
-    const daemonUp = !(await errorBanner.isExisting());
-    if (!daemonUp) {
-      console.log("Skipping: daemon not running");
+    if (appState !== "devices") {
+      console.log(`[skip] No devices available (state=${appState})`);
       return;
     }
-
-    await browser.waitUntil(
-      async () => {
-        const rings = await $$('[aria-label*="Battery"]');
-        return rings.length > 0;
-      },
-      { timeout: 10_000, timeoutMsg: "No battery ring found" },
-    );
-
     const ring = await $('[aria-label*="Battery"]');
     await expect(ring).toBeDisplayed();
   });
