@@ -1,7 +1,7 @@
 use crate::razer_protocol::{
-    build_battery_query_payload, build_charging_query_payload, build_headset_status_query,
-    parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL,
-    CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
+    build_battery_query_payload, build_charging_query_payload, build_headset_battery_query,
+    build_headset_status_query, parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY,
+    CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
@@ -373,50 +373,55 @@ fn query_charging_status(
     Err(rusb::Error::Io)
 }
 
-/// Queries the Kraken V4 Pro headset battery level using a two-phase strategy:
+/// Queries the Kraken V4 Pro headset battery level using a three-phase strategy:
 ///
-/// 1. **Active query**: Sends a `cc=0x25/ci=0x16` SET_REPORT to prompt the
-///    device to emit a status push packet.
-/// 2. **Drain-and-filter**: Reads up to `MAX_DRAIN` packets from ep=0x84 (3 s
-///    timeout each), logging every packet at `debug` level for diagnosis.
-///    Stops when a valid `cc=0x25/ci=0x16` response is found.
+/// 1. **Standard query** (highest priority): Sends `cc=0x07/ci=0x80` (the universal
+///    Razer battery query from `razerchromacommon.c`). Response has battery in `byte[10]`
+///    (arguments[1]) on a direct 0–100 scale. Drains up to MAX_DRAIN_STD packets.
 ///
-/// **Protocol source** (`sidehaptics.pcapng`):
-/// The device pushes unsolicited status packets with `cc=0x25/ci=0x16` during
-/// active Synapse sessions. Sending the same command class may prompt an
-/// immediate response rather than waiting for the next scheduled push (~1–5 s).
+/// 2. **Status-push query** (fallback): Sends `cc=0x25/ci=0x16` to prompt a full
+///    status push (data_size=0x5f). Only returns data during active Synapse sessions.
 ///
-/// Returns `Some(percent)` on success or `None` on timeout / device not found.
+/// 3. **Spontaneous cc=0x05 packets** (lowest priority): The device emits these
+///    autonomously on every poll. byte[8]=0x80 may be a status flag, not real battery.
+///    Used as last resort if neither query returns data.
+///
+/// Returns `Some(percent 0–100)` on success or `None` on timeout / device not found.
 pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
-    const MAX_DRAIN: usize = 5;
+    const MAX_DRAIN: usize = 6;
 
     let (handle, iface_u8) = open_razer_device(product_id)
         .inspect_err(|e| log::debug!("[HeadsetBatt] open_razer_device: {e:?}"))
         .ok()?;
 
     let iface = iface_u8 as u16;
-    let query = build_headset_status_query();
     let timeout = std::time::Duration::from_secs(3);
 
-    // Send the active query — device may respond immediately, or the next
-    // periodic push will carry the answer. Either way we read below.
-    if let Err(e) = handle.write_control(0x21, 0x09, 0x0202, iface, &query, timeout) {
-        log::debug!("[HeadsetBatt] SET_REPORT(cc=0x25/ci=0x16) failed (non-fatal): {e:?}");
-        // Continue — device still sends periodic pushes even without the query.
+    // ── Phase 1: Standard battery query cc=0x07/ci=0x80 ──────────────────────
+    let std_query = build_headset_battery_query();
+    if let Err(e) = handle.write_control(0x21, 0x09, 0x0202, iface, &std_query, timeout) {
+        log::debug!("[HeadsetBatt] SET_REPORT(cc=0x07/ci=0x80) failed (non-fatal): {e:?}");
+    } else {
+        log::debug!("[HeadsetBatt] Sent standard battery query cc=0x07/ci=0x80");
     }
 
-    // Drain up to MAX_DRAIN packets, logging every one so the daemon log shows
-    // exactly what the device is sending (critical diagnostic for "still showing ?").
+    // ── Phase 2: Status push query cc=0x25/ci=0x16 ───────────────────────────
+    let status_query = build_headset_status_query();
+    if let Err(e) = handle.write_control(0x21, 0x09, 0x0202, iface, &status_query, timeout) {
+        log::debug!("[HeadsetBatt] SET_REPORT(cc=0x25/ci=0x16) failed (non-fatal): {e:?}");
+    }
+
+    // ── Drain and filter ──────────────────────────────────────────────────────
+    // Read up to MAX_DRAIN packets. parse_headset_push_packet handles all three
+    // formats: cc=0x07 (highest), cc=0x25 (Wireshark push), cc=0x05 (fallback).
     for attempt in 1..=MAX_DRAIN {
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
         match handle.read_interrupt(0x84, &mut resp, timeout) {
             Err(e) => {
                 log::debug!("[HeadsetBatt] read_interrupt attempt {attempt}: {e:?}");
-                // Timeout or device gone — no point draining further.
                 return None;
             }
             Ok(_) => {
-                // Always log first 16 bytes so we can diagnose unknown packets.
                 log::debug!(
                     "[HeadsetBatt] packet #{attempt}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
                     resp[0], resp[1], resp[2], resp[3], resp[4], resp[5],
@@ -425,18 +430,22 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
                 );
 
                 if let Some(pct) = parse_headset_push_packet(&resp) {
-                    log::info!("[HeadsetBatt] battery={pct}% (raw=0x{:02x})", resp[9]);
+                    log::info!(
+                        "[HeadsetBatt] battery={pct}% from packet cc=0x{:02x}/ci=0x{:02x}",
+                        resp[6],
+                        resp[7]
+                    );
                     return Some(pct);
                 }
 
                 log::debug!(
-                    "[HeadsetBatt] packet #{attempt} cc=0x{:02x}/ci=0x{:02x} — not a battery push, draining",
+                    "[HeadsetBatt] packet #{attempt} cc=0x{:02x}/ci=0x{:02x} — not battery, continuing",
                     resp[6], resp[7]
                 );
             }
         }
     }
 
-    log::debug!("[HeadsetBatt] no battery push in {MAX_DRAIN} packets");
+    log::debug!("[HeadsetBatt] no battery data in {MAX_DRAIN} packets");
     None
 }
