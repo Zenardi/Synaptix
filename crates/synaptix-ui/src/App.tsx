@@ -12,7 +12,8 @@ import DeviceDetail from "./pages/DeviceDetail";
 export type BatteryState =
   | { Charging: number }
   | { Discharging: number }
-  | "Full";
+  | "Full"
+  | "Unknown";
 
 // Matches the DeviceEntry struct returned by the Tauri `get_razer_devices` command.
 export type ConnectionType = "Wired" | "Dongle" | "Bluetooth";
@@ -40,6 +41,7 @@ interface ConnectionUpdatePayload {
 
 export function getBatteryLevel(state: BatteryState): number {
   if (state === "Full") return 100;
+  if (state === "Unknown") return 0;
   if (typeof state === "object" && "Charging" in state) return state.Charging;
   if (typeof state === "object" && "Discharging" in state)
     return state.Discharging;
@@ -52,6 +54,7 @@ export function isCharging(
 ): boolean {
   if (connectionType === "Wired") return true;
   if (state === "Full") return true;
+  if (state === "Unknown") return false;
   return typeof state === "object" && "Charging" in state;
 }
 

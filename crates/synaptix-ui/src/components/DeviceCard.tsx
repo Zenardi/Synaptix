@@ -19,9 +19,10 @@ interface Props {
 
 export default function DeviceCard({ device }: Props) {
   const navigate = useNavigate();
+  const isUnknown = device.battery_state === "Unknown";
   const level = getBatteryLevel(device.battery_state);
   const charging = isCharging(device.battery_state, device.connection_type);
-  const targetOffset = CIRCUMFERENCE * (1 - level / 100);
+  const targetOffset = isUnknown ? CIRCUMFERENCE : CIRCUMFERENCE * (1 - level / 100);
 
   return (
     <div className="bg-[#181818] rounded-xl p-6 border border-white/5 flex flex-col items-center gap-5">
@@ -33,7 +34,7 @@ export default function DeviceCard({ device }: Props) {
           viewBox="0 0 100 100"
           width={128}
           height={128}
-          aria-label={`Battery level ${level}%`}
+          aria-label={isUnknown ? "Battery level unknown" : `Battery level ${level}%`}
         >
           <circle
             cx="50" cy="50" r={RADIUS}
@@ -42,7 +43,7 @@ export default function DeviceCard({ device }: Props) {
           <motion.circle
             cx="50" cy="50" r={RADIUS}
             fill="none"
-            stroke="#44d62c"
+            stroke={isUnknown ? "#4a4a4a" : "#44d62c"}
             strokeWidth={STROKE_WIDTH}
             strokeLinecap="round"
             strokeDasharray={CIRCUMFERENCE}
@@ -55,6 +56,8 @@ export default function DeviceCard({ device }: Props) {
                     "drop-shadow(0 0 12px #44d62c)",
                     "drop-shadow(0 0 4px #44d62c)",
                   ]
+                : isUnknown
+                ? "none"
                 : "drop-shadow(0 0 6px #44d62c)",
             }}
             transition={
@@ -67,7 +70,7 @@ export default function DeviceCard({ device }: Props) {
 
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5">
           <span className="text-2xl font-bold leading-none text-white">
-            {level}%
+            {isUnknown ? "?" : `${level}%`}
           </span>
           {charging && (
             <span className="text-[9px] font-semibold tracking-widest uppercase text-razer-green">

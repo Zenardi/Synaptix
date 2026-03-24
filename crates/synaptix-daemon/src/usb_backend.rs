@@ -1,7 +1,7 @@
 use crate::razer_protocol::{
-    build_battery_query_payload, build_charging_query_payload, validate_response,
-    CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID,
-    REPORT_LEN,
+    build_battery_query_payload, build_charging_query_payload, build_headset_battery_query,
+    validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS,
+    HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
@@ -371,4 +371,54 @@ fn query_charging_status(
 
     eprintln!("[Battery] Charging query BUSY after 3 attempts.");
     Err(rusb::Error::Io)
+}
+
+/// Attempts to read the Kraken V4 Pro headset battery level using the 64-byte
+/// HID protocol (wValue=0x0202, wIndex=0x0004 on Interface 4).
+///
+/// Returns `Some(percent)` on success or `None` if the device does not respond
+/// as expected. Callers should record `BatteryState::Unknown` on `None`.
+pub fn query_headset_battery(product_id: u16) -> Option<u8> {
+    let (handle, iface_u8) = open_razer_device(product_id)
+        .inspect_err(|e| eprintln!("[HeadsetBatt] Failed to open device: {e:?}"))
+        .ok()?;
+
+    let iface = iface_u8 as u16;
+    let timeout = std::time::Duration::from_millis(500);
+    let query = build_headset_battery_query();
+
+    // wValue=0x0202 — Report Type 2, Report ID 2 (same as haptic commands)
+    handle
+        .write_control(0x21, 0x09, 0x0202, iface, &query, timeout)
+        .inspect_err(|e| eprintln!("[HeadsetBatt] SET_REPORT failed: {e:?}"))
+        .ok()?;
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    let mut resp = [0u8; HAPTIC_REPORT_LEN];
+    handle
+        .read_control(0xA1, 0x01, 0x0202, iface, &mut resp, timeout)
+        .inspect_err(|e| eprintln!("[HeadsetBatt] GET_REPORT failed: {e:?}"))
+        .ok()?;
+
+    // byte[1] = status: 0x02 = success, anything else = failure/busy
+    if resp[1] != 0x02 {
+        eprintln!(
+            "[HeadsetBatt] Unexpected response status: 0x{:02x} — battery query unsupported?",
+            resp[1]
+        );
+        return None;
+    }
+
+    let raw = resp[9];
+    if raw == 0 {
+        // A raw value of 0 could mean the query is unimplemented (device echoes
+        // zeroes) rather than genuinely 0%. Treat as unsupported.
+        eprintln!("[HeadsetBatt] Response byte[9]=0 — treating as unsupported.");
+        return None;
+    }
+
+    let pct = ((raw as u16 * 100) / 255) as u8;
+    println!("[HeadsetBatt] Level: raw={raw}/255 → {pct}%");
+    Some(pct)
 }

@@ -81,11 +81,14 @@ pub enum AudioCommand {
 ///
 /// `Charging(u8)` and `Discharging(u8)` carry the current charge level (0–100).
 /// `Full` is reported when the device is on the charger and fully charged.
+/// `Unknown` is used when the battery level cannot be determined (e.g. the USB
+/// query is unsupported or failed) — the UI should display "?" in this case.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BatteryState {
     Charging(u8),
     Discharging(u8),
     Full,
+    Unknown,
 }
 
 impl RazerProductId {
@@ -113,7 +116,7 @@ impl BatteryState {
     pub fn level(&self) -> Option<u8> {
         match self {
             BatteryState::Charging(lvl) | BatteryState::Discharging(lvl) => Some(*lvl),
-            BatteryState::Full => None,
+            BatteryState::Full | BatteryState::Unknown => None,
         }
     }
 }

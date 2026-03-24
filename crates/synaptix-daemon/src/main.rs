@@ -49,6 +49,7 @@ fn state_pct(state: &BatteryState) -> u8 {
     match state {
         BatteryState::Charging(n) | BatteryState::Discharging(n) => *n,
         BatteryState::Full => 100,
+        BatteryState::Unknown => 0,
     }
 }
 
@@ -57,6 +58,7 @@ fn battery_to_pct(state: &BatteryState) -> (u8, bool) {
         BatteryState::Charging(pct) => (*pct, true),
         BatteryState::Discharging(pct) => (*pct, false),
         BatteryState::Full => (100, true),
+        BatteryState::Unknown => (0, false),
     }
 }
 
@@ -169,19 +171,38 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     .await
     .unwrap_or_default();
 
-    for (pid, product_id) in detected_headsets {
+    for (pid, product_id) in &detected_headsets {
+        let pid = *pid;
         let Some(profile) = get_device_profile(pid) else {
             continue;
         };
         let device_id = format!("kraken-v4-pro-{pid:04x}");
         log::info!("[Detect] {} on USB: PID={pid:#06x}", profile.name);
+
+        // Attempt a best-effort battery query via the 64-byte HID protocol.
+        // Falls back to BatteryState::Unknown if the device doesn't respond
+        // (query format unverified against a Wireshark battery capture).
+        let headset_battery =
+            tokio::task::spawn_blocking(move || usb_backend::query_headset_battery(pid))
+                .await
+                .ok()
+                .flatten()
+                .map(BatteryState::Discharging)
+                .unwrap_or_else(|| {
+                    log::warn!(
+                        "[HeadsetBatt] Could not read battery for PID {pid:#06x} — showing Unknown"
+                    );
+                    BatteryState::Unknown
+                });
+
+        log::info!("[HeadsetBatt] Initial state: {headset_battery:?}");
+
         manager.add_device(
             device_id,
             RazerDevice {
                 name: profile.name,
-                product_id,
-                // Wired USB hub — no battery to query; use Full as a neutral placeholder.
-                battery_state: BatteryState::Full,
+                product_id: product_id.clone(),
+                battery_state: headset_battery,
                 capabilities: profile.capabilities,
                 connection_type: ConnectionType::Wired,
             },
@@ -398,6 +419,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                                 let pct = match &d.battery_state {
                                     BatteryState::Charging(n) | BatteryState::Discharging(n) => *n,
                                     BatteryState::Full => 100,
+                                    BatteryState::Unknown => 0,
                                 };
                                 // Only emit if we have a meaningful level.
                                 if pct > 0 {
