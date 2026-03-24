@@ -373,26 +373,9 @@ fn query_charging_status(
     Err(rusb::Error::Io)
 }
 
-/// Reads the Kraken V4 Pro headset battery level from the HID interface.
-///
-/// **Protocol (Wireshark-verified, `battery_synapse.pcapng`):**
-/// Battery packets are 64 bytes starting with `02 02 <pct> ...` on ep=0x84 of Interface 4.
-/// - `byte[0]` = 0x02 (Report ID)
-/// - `byte[1]` = 0x02 (status: data available)
-/// - `byte[2]` = battery % direct (0–100, e.g. 0x60 = 96%)
-///
-/// **Trigger mechanism (Wireshark-confirmed):**
-/// The device pushes one packet autonomously on USB enumeration, then only pushes again
-/// in response to an OUTPUT report (HID SET_REPORT) sent to Interface 4.
-/// On Linux, Interface 4 is unbound so no driver sends OUTPUT reports → device never
-/// pushes → `read_interrupt` always times out unless we send the trigger ourselves.
-///
-/// **Correct sequence:**
-/// 1. Send a 64-byte OUTPUT report (SET_REPORT, wValue=0x0202, wIndex=4) using a
-///    zero-intensity haptic payload — this triggers the device to measure and push battery.
-/// 2. Read the interrupt-IN on ep=0x84 within 500 ms (device responds within ~3 ms).
-/// 3. Parse `byte[2]` as direct battery percentage.
-pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
+/// Attempts to query the Kraken V4 Pro battery via a single trigger+read cycle.
+/// Returns `Some(pct)` on the first successful attempt, `None` if all 3 attempts fail.
+fn try_headset_battery_query(product_id: u16) -> Option<u8> {
     let (handle, _iface_u8) = open_razer_device(product_id)
         .inspect_err(|e| log::warn!("[HeadsetBatt] open_razer_device failed: {e:?}"))
         .ok()?;
@@ -401,7 +384,6 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
     let read_timeout = std::time::Duration::from_millis(500);
 
     for attempt in 1..=3usize {
-        // Send a zero-intensity haptic OUTPUT to trigger the device to push its battery state.
         let trigger = build_haptic_report(0);
         match handle.write_control(0x21, 0x09, 0x0202, 0x0004, &trigger, ctrl_timeout) {
             Ok(_) => log::info!("[HeadsetBatt] Sent OUTPUT trigger (attempt {attempt})"),
@@ -414,7 +396,7 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
             }
         }
 
-        // Device pushes back within ~3 ms per Wireshark; 500 ms timeout is generous.
+        // Device responds within ~10 ms on a freshly-enumerated USB link.
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
         match handle.read_interrupt(0x84, &mut resp, read_timeout) {
             Ok(_) => {
@@ -444,8 +426,47 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
         }
     }
 
+    None
+}
+
+/// Reads the Kraken V4 Pro headset battery level from the HID interface.
+///
+/// **Protocol (Wireshark-verified, `battery_synapse.pcapng`):**
+/// Battery packets are 64 bytes starting with `02 02 <pct> ...` on ep=0x84 of Interface 4.
+/// `byte[2]` is the direct percentage (0–100, e.g. 0x60 = 96%).
+///
+/// **Trigger mechanism:** The device only pushes battery data in response to a HID SET_REPORT
+/// (OUTPUT) on Interface 4. If all attempts fail (device in "inactive relay mode"), a USB
+/// device reset is issued to force re-enumeration and the query is retried.
+pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
+    // First attempt: normal query.
+    if let Some(pct) = try_headset_battery_query(product_id) {
+        return Some(pct);
+    }
+
+    // All attempts failed. The Kraken V4 Pro hub enters an "inactive relay mode"
+    // when it has been idle for a while (observed when switching USB ports or after
+    // extended uptime). A USB bus reset forces the hub to re-enumerate, which puts
+    // it back into active mode. We then retry once.
     log::warn!(
-        "[HeadsetBatt] All attempts failed for PID={product_id:#06x} — battery stays Unknown"
+        "[HeadsetBatt] All attempts failed for PID={product_id:#06x} — issuing USB reset to reactivate hub"
+    );
+
+    if let Ok((handle, _)) = open_razer_device(product_id) {
+        if let Err(e) = handle.reset() {
+            log::warn!("[HeadsetBatt] USB reset failed: {e:?}");
+        } else {
+            log::info!("[HeadsetBatt] USB reset OK — waiting for re-enumeration");
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Some(pct) = try_headset_battery_query(product_id) {
+                log::info!("[HeadsetBatt] Post-reset query succeeded: {pct}%");
+                return Some(pct);
+            }
+        }
+    }
+
+    log::warn!(
+        "[HeadsetBatt] Post-reset query also failed for PID={product_id:#06x} — battery stays Unknown"
     );
     None
 }
