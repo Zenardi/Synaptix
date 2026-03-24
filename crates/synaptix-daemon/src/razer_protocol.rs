@@ -449,25 +449,6 @@ pub const HEADSET_HID_REPORT_ID: u8 = 0x02;
 /// The headset uses this to sequence multi-packet updates.
 static HAPTIC_COUNTER: AtomicU8 = AtomicU8::new(9);
 
-/// Builds a 90-byte Razer HID read-only firmware-version request for the
-/// Kraken V4 Pro, sent to Interface 2 (`wIndex=0x0002`) as a trigger.
-///
-/// **Why this is needed:** Although the device pushes 64-byte HID packets on
-/// ep=0x84 every ~1 second when Synapse is running, it only starts pushing
-/// after receiving a command on Interface 2. Sending this "firmware version"
-/// read request is the minimal trigger that causes the firmware to begin
-/// pushing battery-status packets.
-///
-/// **USB request:** `write_control(bmRequestType=0x21, bRequest=0x09,
-/// wValue=0x0300, wIndex=0x0002, 90-byte payload)`
-pub fn build_headset_wake_query() -> [u8; 90] {
-    let mut buf = [0u8; 90];
-    buf[1] = 0x1F; // transaction_id
-    buf[6] = 0x00; // command_class = misc
-    buf[7] = 0x81; // command_id = get_firmware_version (read-only)
-    buf
-}
-
 /// Parses a 64-byte Kraken V4 Pro interrupt-IN packet received on ep=0x84.
 ///
 /// **Wireshark ground truth (`battery_synapse.pcapng`, 78 packets, all identical):**
@@ -479,8 +460,8 @@ pub fn build_headset_wake_query() -> [u8; 90] {
 /// - **`byte[2]`** = battery percentage **direct, 0–100 decimal** (no scale!)
 ///   e.g. `0x60` = 96 = **96%** battery
 ///
-/// The device starts pushing these packets after receiving a wake query on
-/// Interface 2 via [`build_headset_wake_query`].
+/// On Linux, Interface 4 (ep=0x84) is unbound, so [`poll_headset_battery`] first
+/// tries HID GET_REPORT, then falls back to `clear_halt` + `read_interrupt`.
 ///
 /// Returns `Some(percent)` when `byte[0] == 0x02` and `byte[2]` is in 1–100.
 /// Returns `None` for all other packets.
