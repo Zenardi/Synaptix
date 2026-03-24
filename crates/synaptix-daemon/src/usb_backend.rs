@@ -410,11 +410,25 @@ pub fn query_headset_battery(product_id: u16) -> Option<u8> {
         return None;
     }
 
+    // Validate that the response echoes the expected command class and ID.
+    // If the device doesn't understand the command it often echoes our payload
+    // or returns zeroes — either way the cmd bytes won't match.
+    if resp[6] != CMD_CLASS_BATTERY || resp[7] != CMD_ID_BATTERY_LEVEL {
+        eprintln!(
+            "[HeadsetBatt] Response cmd mismatch: class=0x{:02x} id=0x{:02x} (expected 0x07/0x80)",
+            resp[6], resp[7]
+        );
+        return None;
+    }
+
     let raw = resp[9];
-    if raw == 0 {
-        // A raw value of 0 could mean the query is unimplemented (device echoes
-        // zeroes) rather than genuinely 0%. Treat as unsupported.
-        eprintln!("[HeadsetBatt] Response byte[9]=0 — treating as unsupported.");
+    // 0x00 = device echoed zeros (command not executed).
+    // 0xFF = device filled unset byte with all-ones (common "not supported" pattern).
+    // Both map to an implausible percentage and are rejected.
+    if raw == 0 || raw == 0xFF {
+        eprintln!(
+            "[HeadsetBatt] Response byte[9]=0x{raw:02x} — treating as unsupported (raw 0/255 is garbage)."
+        );
         return None;
     }
 
