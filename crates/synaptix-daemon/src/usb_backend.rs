@@ -394,7 +394,7 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
         match handle.read_interrupt(0x84, &mut resp, timeout) {
             Err(e) => {
                 log::debug!("[HeadsetBatt] read_interrupt attempt {attempt}: {e:?}");
-                return None;
+                continue;
             }
             Ok(_) => {
                 log::debug!(

@@ -179,22 +179,39 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         let device_id = format!("kraken-v4-pro-{pid:04x}");
         log::info!("[Detect] {} on USB: PID={pid:#06x}", profile.name);
 
-        // Attempt to catch the first status push packet from the headset.
-        // poll_headset_battery sends an active cc=0x25/ci=0x16 query and then
-        // drains up to 5 packets from ep=0x84 (3 s each) looking for a battery push.
-        // All received packets are logged at DEBUG level for diagnosis.
-        let headset_battery =
-            tokio::task::spawn_blocking(move || usb_backend::poll_headset_battery(pid))
-                .await
-                .ok()
-                .flatten()
+        // Attempt to catch the first push packet from the headset.
+        // The device pushes 64-byte HID reports on ep=0x84 automatically every ~1s.
+        // Battery = resp[2] directly (0-100%). No trigger needed.
+        // Retry up to 3 times with a 1-second gap to handle devices that are
+        // still warming up when the daemon starts.
+        let headset_battery = {
+            let mut result: Option<u8> = None;
+            for startup_attempt in 1..=3u8 {
+                let try_pid = pid;
+                result =
+                    tokio::task::spawn_blocking(move || usb_backend::poll_headset_battery(try_pid))
+                        .await
+                        .ok()
+                        .flatten();
+
+                if result.is_some() {
+                    break;
+                }
+                log::warn!(
+                    "[HeadsetBatt] Startup attempt {startup_attempt}/3 returned None for PID {pid:#06x}, retrying in 1s…"
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            }
+
+            result
                 .map(BatteryState::Discharging)
                 .unwrap_or_else(|| {
                     log::warn!(
-                        "[HeadsetBatt] Could not read battery for PID {pid:#06x} — showing Unknown"
+                        "[HeadsetBatt] All startup attempts failed for PID {pid:#06x} — showing Unknown until polling loop resolves it"
                     );
                     BatteryState::Unknown
-                });
+                })
+        };
 
         log::info!("[HeadsetBatt] Initial state: {headset_battery:?}");
 
