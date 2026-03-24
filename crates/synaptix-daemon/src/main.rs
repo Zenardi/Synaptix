@@ -179,12 +179,12 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         let device_id = format!("kraken-v4-pro-{pid:04x}");
         log::info!("[Detect] {} on USB: PID={pid:#06x}", profile.name);
 
-        // Attempt to catch the first status push packet from the headset (best-effort,
-        // 200 ms window). The device pushes these asynchronously — if none arrives
-        // in time, we start with Unknown and the background poller will fill it in
-        // within a few seconds.
+        // Attempt to catch the first status push packet from the headset.
+        // poll_headset_battery sends an active cc=0x25/ci=0x16 query and then
+        // drains up to 5 packets from ep=0x84 (3 s each) looking for a battery push.
+        // All received packets are logged at DEBUG level for diagnosis.
         let headset_battery =
-            tokio::task::spawn_blocking(move || usb_backend::read_headset_status_push(pid))
+            tokio::task::spawn_blocking(move || usb_backend::poll_headset_battery(pid))
                 .await
                 .ok()
                 .flatten()
@@ -233,9 +233,9 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     log::info!("Synaptix Daemon running on org.synaptix.Daemon at /org/synaptix/Daemon");
 
     // ── Headset battery polling loop ─────────────────────────────────────────
-    // The Kraken V4 Pro pushes status packets (cc=0x25/ci=0x16) on ep=0x84
-    // periodically (~every 5s) without needing a query command. We listen for
-    // these every 2s and update the headset battery when a push is received.
+    // Sends an active cc=0x25/ci=0x16 query, then drains up to 5 packets from
+    // ep=0x84 (3 s timeout each). All packets are logged at DEBUG level —
+    // run the daemon with RUST_LOG=debug to diagnose "still showing ?" issues.
     if !detected_headsets.is_empty() {
         let headset_conn = conn.clone();
         let headset_pids: Vec<(u16, String)> = detected_headsets
@@ -244,19 +244,20 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             .collect();
 
         tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            // Give the D-Bus interface a moment to be fully registered before
+            // the first poll, then poll every 5 s (matches device push cadence).
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
+            loop {
                 for (pid, device_id) in &headset_pids {
                     let pid = *pid;
                     let device_id = device_id.clone();
 
-                    let pct_opt = tokio::task::spawn_blocking(move || {
-                        usb_backend::read_headset_status_push(pid)
-                    })
-                    .await
-                    .ok()
-                    .flatten();
+                    let pct_opt =
+                        tokio::task::spawn_blocking(move || usb_backend::poll_headset_battery(pid))
+                            .await
+                            .ok()
+                            .flatten();
 
                     let Some(pct) = pct_opt else { continue };
                     let new_state = BatteryState::Discharging(pct);
@@ -287,6 +288,8 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
 
                     log::info!("[HeadsetBatt] Poll: {device_id} → {new_state:?}");
                 }
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
         });
     }

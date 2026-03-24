@@ -1,7 +1,7 @@
 use crate::razer_protocol::{
-    build_battery_query_payload, build_charging_query_payload, validate_response,
-    CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN,
-    RAZER_VID, REPORT_LEN,
+    build_battery_query_payload, build_charging_query_payload, build_headset_status_query,
+    parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL,
+    CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
@@ -373,51 +373,70 @@ fn query_charging_status(
     Err(rusb::Error::Io)
 }
 
-/// Attempts to read the Kraken V4 Pro headset battery from an **unsolicited push
-/// packet** on interrupt IN endpoint 0x84.
+/// Queries the Kraken V4 Pro headset battery level using a two-phase strategy:
 ///
-/// **Protocol reverse-engineered from `sidehaptics.pcapng`**:
-/// The device pushes status packets periodically (~every 5 s) WITHOUT any query.
-/// These packets have `cc=0x25 / ci=0x16` and carry the raw battery level at
-/// `byte[9]` (0–255 scale, same as Razer mouse protocol: `level * 100 / 255`).
+/// 1. **Active query**: Sends a `cc=0x25/ci=0x16` SET_REPORT to prompt the
+///    device to emit a status push packet.
+/// 2. **Drain-and-filter**: Reads up to `MAX_DRAIN` packets from ep=0x84 (3 s
+///    timeout each), logging every packet at `debug` level for diagnosis.
+///    Stops when a valid `cc=0x25/ci=0x16` response is found.
 ///
-/// No SET_REPORT command is sent — we simply listen on ep=0x84.
-/// If no push packet arrives within the 200 ms window, `None` is returned and
-/// the caller should retain the last-known state (or `BatteryState::Unknown`).
-pub fn read_headset_status_push(product_id: u16) -> Option<u8> {
-    // STATUS_PUSH_CC / STATUS_PUSH_CI confirmed from Wireshark sidehaptics.pcapng:
-    // byte[6]=0x25, byte[7]=0x16, byte[9]=raw_battery (0-255).
-    const STATUS_PUSH_CC: u8 = 0x25;
-    const STATUS_PUSH_CI: u8 = 0x16;
+/// **Protocol source** (`sidehaptics.pcapng`):
+/// The device pushes unsolicited status packets with `cc=0x25/ci=0x16` during
+/// active Synapse sessions. Sending the same command class may prompt an
+/// immediate response rather than waiting for the next scheduled push (~1–5 s).
+///
+/// Returns `Some(percent)` on success or `None` on timeout / device not found.
+pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
+    const MAX_DRAIN: usize = 5;
 
-    let (handle, _iface) = open_razer_device(product_id)
-        .inspect_err(|e| log::debug!("[HeadsetBatt] open_razer_device failed: {e:?}"))
+    let (handle, iface_u8) = open_razer_device(product_id)
+        .inspect_err(|e| log::debug!("[HeadsetBatt] open_razer_device: {e:?}"))
         .ok()?;
 
-    let timeout = std::time::Duration::from_millis(200);
-    let mut resp = [0u8; HAPTIC_REPORT_LEN];
+    let iface = iface_u8 as u16;
+    let query = build_headset_status_query();
+    let timeout = std::time::Duration::from_secs(3);
 
-    handle
-        .read_interrupt(0x84, &mut resp, timeout)
-        .inspect_err(|e| log::debug!("[HeadsetBatt] read_interrupt: {e:?}"))
-        .ok()?;
-
-    if resp[6] != STATUS_PUSH_CC || resp[7] != STATUS_PUSH_CI {
-        log::debug!(
-            "[HeadsetBatt] Not a status push (got cc=0x{:02x}/ci=0x{:02x})",
-            resp[6],
-            resp[7]
-        );
-        return None;
+    // Send the active query — device may respond immediately, or the next
+    // periodic push will carry the answer. Either way we read below.
+    if let Err(e) = handle.write_control(0x21, 0x09, 0x0202, iface, &query, timeout) {
+        log::debug!("[HeadsetBatt] SET_REPORT(cc=0x25/ci=0x16) failed (non-fatal): {e:?}");
+        // Continue — device still sends periodic pushes even without the query.
     }
 
-    let raw = resp[9];
-    if raw == 0 || raw == 0xFF {
-        log::debug!("[HeadsetBatt] Push byte[9]=0x{raw:02x} — invalid, ignoring.");
-        return None;
+    // Drain up to MAX_DRAIN packets, logging every one so the daemon log shows
+    // exactly what the device is sending (critical diagnostic for "still showing ?").
+    for attempt in 1..=MAX_DRAIN {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        match handle.read_interrupt(0x84, &mut resp, timeout) {
+            Err(e) => {
+                log::debug!("[HeadsetBatt] read_interrupt attempt {attempt}: {e:?}");
+                // Timeout or device gone — no point draining further.
+                return None;
+            }
+            Ok(_) => {
+                // Always log first 16 bytes so we can diagnose unknown packets.
+                log::debug!(
+                    "[HeadsetBatt] packet #{attempt}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                    resp[0], resp[1], resp[2], resp[3], resp[4], resp[5],
+                    resp[6], resp[7], resp[8], resp[9], resp[10], resp[11],
+                    resp[12], resp[13], resp[14], resp[15],
+                );
+
+                if let Some(pct) = parse_headset_push_packet(&resp) {
+                    log::info!("[HeadsetBatt] battery={pct}% (raw=0x{:02x})", resp[9]);
+                    return Some(pct);
+                }
+
+                log::debug!(
+                    "[HeadsetBatt] packet #{attempt} cc=0x{:02x}/ci=0x{:02x} — not a battery push, draining",
+                    resp[6], resp[7]
+                );
+            }
+        }
     }
 
-    let pct = ((raw as u16 * 100) / 255) as u8;
-    log::info!("[HeadsetBatt] Status push: byte[9]=0x{raw:02x} → {pct}%");
-    Some(pct)
+    log::debug!("[HeadsetBatt] no battery push in {MAX_DRAIN} packets");
+    None
 }
