@@ -158,9 +158,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
 
     // Probe for known headsets on the USB bus.
     // 0x0568 = Kraken V4 Pro OLED Hub (always present when the headset is plugged in).
-    const HEADSET_PIDS: &[(u16, RazerProductId)] = &[
-        (0x0568, RazerProductId::KrakenV4Pro),
-    ];
+    const HEADSET_PIDS: &[(u16, RazerProductId)] = &[(0x0568, RazerProductId::KrakenV4Pro)];
     let detected_headsets: Vec<(u16, RazerProductId)> = tokio::task::spawn_blocking(|| {
         HEADSET_PIDS
             .iter()

@@ -1,7 +1,7 @@
 use crate::razer_protocol::{
     build_battery_query_payload, build_charging_query_payload, validate_response,
-    CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN,
-    RAZER_VID, REPORT_LEN,
+    CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID,
+    REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
@@ -62,11 +62,9 @@ fn open_razer_device(product_id: u16) -> rusb::Result<(DeviceHandle<Context>, u8
             );
         }
 
-        handle
-            .claim_interface(control_interface)
-            .inspect_err(|e| {
-                eprintln!("[USB] claim_interface({control_interface}) failed: {e:?}");
-            })?;
+        handle.claim_interface(control_interface).inspect_err(|e| {
+            eprintln!("[USB] claim_interface({control_interface}) failed: {e:?}");
+        })?;
 
         println!("[USB] Interface {control_interface} claimed.");
         return Ok((handle, control_interface));
@@ -143,10 +141,7 @@ pub fn send_control_transfer(product_id: u16, payload: &[u8; REPORT_LEN]) -> rus
 /// Returns `Ok(())` on success. `rusb::Error::Timeout` means the firmware did
 /// not ACK within 1 s — likely a wrong interface or incorrect wValue.
 /// `rusb::Error::Pipe` (stall) means the firmware rejected the request type.
-pub fn send_haptic_report(
-    product_id: u16,
-    payload: &[u8; HAPTIC_REPORT_LEN],
-) -> rusb::Result<()> {
+pub fn send_haptic_report(product_id: u16, payload: &[u8; HAPTIC_REPORT_LEN]) -> rusb::Result<()> {
     let (handle, iface) = open_razer_device(product_id)?;
     let timeout = std::time::Duration::from_millis(1_000);
 
@@ -270,11 +265,9 @@ pub fn query_battery(
                     println!(
                         "[Battery] Dongle returned 0%; trying wired interface (0x{COBRA_PRO_WIRED_PID:04x}) for level…"
                     );
-                    match open_razer_device(COBRA_PRO_WIRED_PID)
-                        .and_then(|(h, wi)| {
-                            query_level(&h, wi as u16, transaction_id, &sleep, timeout)
-                        })
-                    {
+                    match open_razer_device(COBRA_PRO_WIRED_PID).and_then(|(h, wi)| {
+                        query_level(&h, wi as u16, transaction_id, &sleep, timeout)
+                    }) {
                         Ok(wired_pct) if wired_pct > 0 => {
                             println!(
                                 "[Battery] Wired interface returned {wired_pct}% — using this."

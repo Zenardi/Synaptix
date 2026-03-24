@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU8, Ordering};
+
 /// USB Vendor ID for all Razer devices.
 pub const RAZER_VID: u16 = 0x1532;
 
@@ -427,7 +429,7 @@ pub fn build_set_haptic_payload(level: u8) -> [u8; REPORT_LEN] {
 // Wireshark capture on Windows confirmed the Kraken V4 Pro Hub (PID 0x0568)
 // uses a 64-byte report on Interface 4, NOT the legacy 90-byte Razer protocol.
 //
-// Verified USB Setup Packet: 21 09 00 03 04 00 5a 00
+// Wireshark-verified USB Setup Packet (haptics_synapse.pcapng):
 //   bmRequestType = 0x21 (HOST→DEVICE | CLASS | INTERFACE)
 //   bRequest      = 0x09 (HID SET_REPORT)
 //   wValue        = 0x0202 (Output Report ID 2)
@@ -437,48 +439,93 @@ pub fn build_set_haptic_payload(level: u8) -> [u8; REPORT_LEN] {
 /// Length of the Kraken V4 Pro Hub proprietary HID report (bytes).
 pub const HAPTIC_REPORT_LEN: usize = 64;
 
-/// Computes the XOR checksum for the 64-byte haptic report.
-///
-/// Protocol: XOR of bytes `[1..62]`, stored at index `62`.
-/// Byte `63` is the terminator and is left as `0x00`.
-fn calculate_haptic_checksum(buf: &mut [u8; HAPTIC_REPORT_LEN]) {
-    buf[62] = buf[1..62].iter().fold(0u8, |acc, &b| acc ^ b);
-}
+/// Session-global counter incremented on every haptic send.
+/// The headset uses this to sequence multi-packet updates.
+static HAPTIC_COUNTER: AtomicU8 = AtomicU8::new(9);
 
-/// Builds a 64-byte HID report that sets the Kraken V4 Pro haptic intensity.
+/// Builds a 64-byte HID output report that sets the Kraken V4 Pro haptic intensity.
 ///
-/// Wireshark-verified layout (Interface 4, wValue `0x0202`):
+/// **Wireshark-verified layout** captured from Razer Synapse 3 on Windows
+/// (`haptics_synapse.pcapng`, `sidehaptics.pcapng`, `volume_sidetone.pcapng`):
 ///
 /// ```text
-/// Byte  0    Report ID      = 0x21
-/// Byte  1    Command Class  = 0x0F
-/// Byte  2    Command ID     = 0x03
-/// Byte  3    Routing Byte   = 0x80  (addressed to headset DSP)
-/// Bytes 4-27 reserved       = 0x00
-/// Byte 28    Frame Start    = 0x31 when intensity > 0  (Sensa HD active)
-///                           = 0x00 when intensity == 0 (no active frame = disable)
-/// Byte 29    Intensity      = 0x01-0x64 when active; 0x00 when disabled
-/// Bytes 30-61 reserved      = 0x00
-/// Byte 62    CRC            = XOR(bytes[1..62])
-/// Byte 63    Terminator     = 0x00
+/// Byte  0     Report ID      = 0x02  (matches wValue low-byte)
+/// Byte  1     status         = 0x00
+/// Byte  2     transaction_id = 0x60  (fixed)
+/// Bytes 3–5   reserved       = 0x00
+/// Byte  6     cmd_class      = 0x28
+/// Byte  7     cmd_id         = 0x17
+/// Byte  8     = 0x09  (fixed)
+/// Byte  9     = 0x01  (fixed)
+/// Byte 10     haptic_a       — primary intensity (0=off, 78=max observed)
+/// Bytes 11–13 = 0x00
+/// Byte 14     = 0x02  (field marker)
+/// Byte 15     = 0x00
+/// Byte 16     haptic_b       — secondary intensity (0=off, 81=max observed)
+/// Bytes 17–18 = 0x00
+/// Byte 19     = 0x03  (field marker)
+/// Bytes 20–23 = 0x00
+/// Byte 24     = 0x04  (field marker)
+/// Byte 25     = 0x00
+/// Byte 26     = 0x3A  (fixed per-session value; narrow observed range 57–58)
+/// Bytes 27–28 = 0x00
+/// Byte 29     = 0x05  (field marker)
+/// Bytes 30–32 = 0x00
+/// Byte 33     = 0x06  (field marker)
+/// Bytes 34–37 = 0x00
+/// Byte 38     = 0x07  (field marker)
+/// Byte 39     = 0x09  (fixed)
+/// Byte 40     = 0x09  (fixed)
+/// Byte 41     = 0x00  (per-session; observed 0x10–0x20 across captures)
+/// Byte 42     counter        — increments by 1 each send (AtomicU8, wraps 255→0)
+/// Byte 43     = 0x01  (fixed)
+/// Byte 44     = 0x08  (fixed)
+/// Bytes 45–63 = 0x00  (padding; NO checksum)
 /// ```
 ///
-/// Note: Sending `buf[28]=0x31, buf[29]=0x00` (intensity zero but frame marker
-/// present) does NOT disable haptics — the firmware keeps processing. The frame
-/// marker must be absent (`0x00`) for the headset to stop haptic output.
-pub fn build_haptic_report(intensity: u8) -> [u8; HAPTIC_REPORT_LEN] {
+/// Level mapping derived from captures (UI values: 0, 33, 66, 100):
+///
+/// | level | byte[10] | byte[16] |
+/// |-------|----------|----------|
+/// |   0   |    0     |    0     |
+/// |  33   |   26     |   62     |
+/// |  66   |   40     |   68     |
+/// |  100  |   78     |   81     |
+pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
     let mut buf = [0u8; HAPTIC_REPORT_LEN];
-    buf[0] = 0x21; // Report ID
-    buf[1] = 0x0F; // Command Class
-    buf[2] = 0x03; // Command ID
-    buf[3] = 0x80; // Routing Byte — targets headset DSP
-    if intensity > 0 {
-        buf[28] = 0x31; // Sensa HD Frame Start — only set when active
-        buf[29] = intensity;
-    }
-    // When intensity == 0: buf[28] and buf[29] remain 0x00.
-    // The absence of the 0x31 frame marker signals the DSP to stop haptic output.
-    calculate_haptic_checksum(&mut buf);
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    buf[0] = 0x02; // report_id
+    buf[2] = 0x60; // transaction_id (fixed)
+    buf[6] = 0x28; // cmd_class
+    buf[7] = 0x17; // cmd_id
+
+    // ── Intensity ─────────────────────────────────────────────────────────────
+    let (haptic_a, haptic_b): (u8, u8) = if level == 0 {
+        (0, 0)
+    } else {
+        let a = (u16::from(level) * 78 / 100) as u8;
+        let b = (60u16 + u16::from(level) * 21 / 100) as u8;
+        (a.max(1), b)
+    };
+
+    buf[8] = 0x09;
+    buf[9] = 0x01;
+    buf[10] = haptic_a;
+    buf[14] = 0x02;
+    buf[16] = haptic_b;
+    buf[19] = 0x03;
+    buf[24] = 0x04;
+    buf[26] = 0x3A; // per-session fixed value
+    buf[29] = 0x05;
+    buf[33] = 0x06;
+    buf[38] = 0x07;
+    buf[39] = 0x09;
+    buf[40] = 0x09;
+    buf[42] = HAPTIC_COUNTER.fetch_add(1, Ordering::Relaxed);
+    buf[43] = 0x01;
+    buf[44] = 0x08;
+
     buf
 }
 
@@ -854,45 +901,54 @@ mod tests {
 
     // ── Kraken V4 Pro OLED Hub — 64-byte haptic report ───────────────────────
 
-    /// Header bytes, frame-start marker, intensity placement, and CRC for the
-    /// Wireshark-verified 64-byte haptic report at intensity=75 (0x4B).
+    /// Verify Wireshark-verified fixed bytes and intensity mapping for level=66.
     #[test]
     fn test_haptic_report_v4_pro_layout() {
-        let report = build_haptic_report(75);
+        let report = build_haptic_report(66);
 
         assert_eq!(report.len(), 64, "report must be exactly 64 bytes");
-        assert_eq!(report[0], 0x21, "Report ID must be 0x21");
-        assert_eq!(report[1], 0x0F, "Command Class must be 0x0F");
-        assert_eq!(report[2], 0x03, "Command ID must be 0x03");
-        assert_eq!(report[3], 0x80, "Routing Byte must be 0x80");
-        assert_eq!(report[28], 0x31, "Sensa HD Frame Start must be 0x31");
-        assert_eq!(report[29], 75, "Intensity must equal the argument");
+        assert_eq!(report[0], 0x02, "Report ID must be 0x02");
+        assert_eq!(report[2], 0x60, "transaction_id must be 0x60");
+        assert_eq!(report[6], 0x28, "cmd_class must be 0x28");
+        assert_eq!(report[7], 0x17, "cmd_id must be 0x17");
+        assert_eq!(report[8], 0x09, "fixed byte[8] must be 0x09");
+        assert_eq!(report[9], 0x01, "fixed byte[9] must be 0x01");
+        assert_eq!(report[14], 0x02, "field marker byte[14] must be 0x02");
+        assert_eq!(report[19], 0x03, "field marker byte[19] must be 0x03");
+        assert_eq!(report[24], 0x04, "field marker byte[24] must be 0x04");
+        assert_eq!(report[29], 0x05, "field marker byte[29] must be 0x05");
+        assert_eq!(report[33], 0x06, "field marker byte[33] must be 0x06");
+        assert_eq!(report[38], 0x07, "field marker byte[38] must be 0x07");
+        assert_eq!(report[39], 0x09, "fixed byte[39] must be 0x09");
+        assert_eq!(report[40], 0x09, "fixed byte[40] must be 0x09");
+        assert_eq!(report[43], 0x01, "fixed byte[43] must be 0x01");
+        assert_eq!(report[44], 0x08, "fixed byte[44] must be 0x08");
 
-        // CRC: XOR of bytes [1..62] stored at index 62.
-        let expected_crc: u8 = report[1..62].iter().fold(0u8, |acc, &b| acc ^ b);
-        assert_eq!(report[62], expected_crc, "CRC mismatch");
-        assert_eq!(report[63], 0x00, "Terminator must be 0x00");
+        // Level 66 → haptic_a = 66*78/100 = 51, haptic_b = 60 + 66*21/100 = 73
+        assert_eq!(report[10], 51, "haptic_a for level=66");
+        assert_eq!(report[16], 73, "haptic_b for level=66");
+
+        // No checksum — trailing bytes must all be zero
+        assert_eq!(report[62], 0x00, "no checksum: byte[62] must be 0x00");
+        assert_eq!(report[63], 0x00, "padding: byte[63] must be 0x00");
     }
 
-    /// Intensity 0 must disable haptics: frame marker (buf[28]) must be absent
-    /// so the headset DSP stops processing. Sending 0x31 with intensity=0 does
-    /// NOT disable — the firmware keeps running at its last firmware level.
+    /// Intensity 0 must zero out haptic_a and haptic_b.
     #[test]
     fn test_haptic_report_v4_pro_disable() {
         let report = build_haptic_report(0);
-        assert_eq!(report[28], 0x00, "Frame marker must be absent (0x00) to disable");
-        assert_eq!(report[29], 0x00, "Intensity must be 0x00 for disable");
-        let expected_crc: u8 = report[1..62].iter().fold(0u8, |acc, &b| acc ^ b);
-        assert_eq!(report[62], expected_crc, "CRC must still be valid when disabled");
+        assert_eq!(report[10], 0x00, "haptic_a must be 0x00 when disabled");
+        assert_eq!(report[16], 0x00, "haptic_b must be 0x00 when disabled");
+        // All padding bytes should remain zero
+        assert_eq!(report[62], 0x00, "no checksum: byte[62] must be 0x00");
     }
 
-    /// Intensity is clamped by the caller (device_manager), but the builder
-    /// must faithfully encode whatever byte it receives — including 0x64 (100).
+    /// Level 100 produces the maximum observed byte values.
     #[test]
     fn test_haptic_report_v4_pro_max_intensity() {
         let report = build_haptic_report(100);
-        assert_eq!(report[29], 0x64, "Max intensity should encode as 0x64");
-        let expected_crc: u8 = report[1..62].iter().fold(0u8, |acc, &b| acc ^ b);
-        assert_eq!(report[62], expected_crc, "CRC must be valid at max intensity");
+        // haptic_a = 100*78/100 = 78, haptic_b = 60 + 100*21/100 = 81
+        assert_eq!(report[10], 78, "haptic_a at max level");
+        assert_eq!(report[16], 81, "haptic_b at max level");
     }
 }

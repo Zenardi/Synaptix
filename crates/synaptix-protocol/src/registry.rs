@@ -1131,8 +1131,7 @@ mod tests {
 
     #[test]
     fn test_registry_resolves_kraken_v4_pro_main() {
-        let profile =
-            get_device_profile(0x056c).expect("Kraken V4 Pro (Main) must be in registry");
+        let profile = get_device_profile(0x056c).expect("Kraken V4 Pro (Main) must be in registry");
         assert_eq!(profile.name, "Razer Kraken V4 Pro (Main)");
         assert_eq!(profile.device_type, DeviceType::Audio);
         assert_eq!(profile.control_interface, 4);
