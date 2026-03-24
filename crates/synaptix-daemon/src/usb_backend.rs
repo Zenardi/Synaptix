@@ -1,7 +1,7 @@
 use crate::razer_protocol::{
-    build_battery_query_payload, build_charging_query_payload, parse_headset_push_packet,
-    validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS,
-    HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
+    build_battery_query_payload, build_charging_query_payload, build_haptic_report,
+    parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL,
+    CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
@@ -378,73 +378,48 @@ fn query_charging_status(
 /// **Protocol (Wireshark-verified, `battery_synapse.pcapng`):**
 /// Battery packets are 64 bytes starting with `02 02 <pct> ...` on ep=0x84 of Interface 4.
 /// - `byte[0]` = 0x02 (Report ID)
+/// - `byte[1]` = 0x02 (status: data available)
 /// - `byte[2]` = battery % direct (0–100, e.g. 0x60 = 96%)
 ///
-/// **Linux vs Windows difference:**
-/// On Windows the HID driver keeps read-URBs queued on ep=0x84 at all times so the
-/// device pushes continuously. On Linux, Interface 4 is unbound (no kernel driver
-/// claims it), so the device firmware stops pushing after a few seconds with no
-/// listener. Two strategies are tried in order:
+/// **Trigger mechanism (Wireshark-confirmed):**
+/// The device pushes one packet autonomously on USB enumeration, then only pushes again
+/// in response to an OUTPUT report (HID SET_REPORT) sent to Interface 4.
+/// On Linux, Interface 4 is unbound so no driver sends OUTPUT reports → device never
+/// pushes → `read_interrupt` always times out unless we send the trigger ourselves.
 ///
-/// 1. **HID GET_REPORT** — synchronous control-pipe read of Input Report 2 from
-///    Interface 4. This is a pull (no need for the device to be in push mode) and
-///    is the fastest path.
-/// 2. **clear_halt + read_interrupt** — resets ep=0x84 data-toggle, waits 250 ms for
-///    the device to restart pushing, then reads up to 4 interrupt packets.
+/// **Correct sequence:**
+/// 1. Send a 64-byte OUTPUT report (SET_REPORT, wValue=0x0202, wIndex=4) using a
+///    zero-intensity haptic payload — this triggers the device to measure and push battery.
+/// 2. Read the interrupt-IN on ep=0x84 within 500 ms (device responds within ~3 ms).
+/// 3. Parse `byte[2]` as direct battery percentage.
 pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
     let (handle, _iface_u8) = open_razer_device(product_id)
         .inspect_err(|e| log::warn!("[HeadsetBatt] open_razer_device failed: {e:?}"))
         .ok()?;
 
-    // ── Strategy 1: HID GET_REPORT (Input Report 2, Interface 4) ────────────
-    // Directly requests the current HID input report via the control pipe.
-    // This works regardless of whether the device is in interrupt-push mode.
-    let mut buf = [0u8; HAPTIC_REPORT_LEN];
     let ctrl_timeout = std::time::Duration::from_millis(500);
-    match handle.read_control(0xA1, 0x01, 0x0102, 0x0004, &mut buf, ctrl_timeout) {
-        Ok(n) if n >= 3 => {
-            log::info!(
-                "[HeadsetBatt] GET_REPORT: {:02x} {:02x} {:02x} … ({n} bytes)",
-                buf[0],
-                buf[1],
-                buf[2]
-            );
-            if let Some(pct) = parse_headset_push_packet(&buf) {
-                return Some(pct);
-            }
-            log::warn!(
-                "[HeadsetBatt] GET_REPORT: report_id=0x{:02x} byte[2]={} not a battery packet",
-                buf[0],
-                buf[2]
-            );
-        }
-        Ok(n) => log::warn!("[HeadsetBatt] GET_REPORT returned only {n} bytes"),
-        Err(e) => {
-            log::warn!("[HeadsetBatt] GET_REPORT failed: {e:?} — falling back to interrupt reads")
-        }
-    }
+    let read_timeout = std::time::Duration::from_millis(500);
 
-    // ── Strategy 2: clear_halt then read_interrupt ───────────────────────────
-    // Interface 4 (ep=0x84) is unbound on Linux, so the device stops pushing
-    // after a short while with no listener. clear_halt resets the endpoint's
-    // data toggle and prompts the firmware to restart its push cycle.
-    match handle.clear_halt(0x84) {
-        Ok(_) => log::info!("[HeadsetBatt] clear_halt(0x84) OK — waiting for first push"),
-        Err(e) => log::warn!("[HeadsetBatt] clear_halt failed (non-fatal): {e:?}"),
-    }
-    std::thread::sleep(std::time::Duration::from_millis(250));
-
-    let read_timeout = std::time::Duration::from_secs(3);
-    for attempt in 1..=4usize {
-        let mut resp = [0u8; HAPTIC_REPORT_LEN];
-        match handle.read_interrupt(0x84, &mut resp, read_timeout) {
+    for attempt in 1..=3usize {
+        // Send a zero-intensity haptic OUTPUT to trigger the device to push its battery state.
+        let trigger = build_haptic_report(0);
+        match handle.write_control(0x21, 0x09, 0x0202, 0x0004, &trigger, ctrl_timeout) {
+            Ok(_) => log::info!("[HeadsetBatt] Sent OUTPUT trigger (attempt {attempt})"),
             Err(e) => {
-                log::warn!("[HeadsetBatt] read_interrupt #{attempt}: {e:?}");
+                log::warn!("[HeadsetBatt] OUTPUT trigger failed (attempt {attempt}): {e:?}");
+                if attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
                 continue;
             }
+        }
+
+        // Device pushes back within ~3 ms per Wireshark; 500 ms timeout is generous.
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        match handle.read_interrupt(0x84, &mut resp, read_timeout) {
             Ok(_) => {
                 log::info!(
-                    "[HeadsetBatt] packet #{attempt}: {:02x} {:02x} {:02x} …",
+                    "[HeadsetBatt] Response (attempt {attempt}): {:02x} {:02x} {:02x} …",
                     resp[0],
                     resp[1],
                     resp[2]
@@ -454,16 +429,23 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
                     return Some(pct);
                 }
                 log::warn!(
-                    "[HeadsetBatt] packet #{attempt}: report_id=0x{:02x} byte[2]={} — skipping",
-                    resp[0],
+                    "[HeadsetBatt] Not a battery packet (attempt {attempt}): byte[1]=0x{:02x} byte[2]={}",
+                    resp[1],
                     resp[2]
                 );
             }
+            Err(e) => {
+                log::warn!("[HeadsetBatt] read_interrupt failed (attempt {attempt}): {e:?}");
+            }
+        }
+
+        if attempt < 3 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
     log::warn!(
-        "[HeadsetBatt] All strategies failed for PID={product_id:#06x} — battery stays Unknown"
+        "[HeadsetBatt] All attempts failed for PID={product_id:#06x} — battery stays Unknown"
     );
     None
 }
