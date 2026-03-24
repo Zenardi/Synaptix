@@ -179,39 +179,10 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         let device_id = format!("kraken-v4-pro-{pid:04x}");
         log::info!("[Detect] {} on USB: PID={pid:#06x}", profile.name);
 
-        // Attempt to catch the first push packet from the headset.
-        // The device pushes 64-byte HID reports on ep=0x84 automatically every ~1s.
-        // Battery = resp[2] directly (0-100%). No trigger needed.
-        // Retry up to 3 times with a 1-second gap to handle devices that are
-        // still warming up when the daemon starts.
-        let headset_battery = {
-            let mut result: Option<u8> = None;
-            for startup_attempt in 1..=3u8 {
-                let try_pid = pid;
-                result =
-                    tokio::task::spawn_blocking(move || usb_backend::poll_headset_battery(try_pid))
-                        .await
-                        .ok()
-                        .flatten();
-
-                if result.is_some() {
-                    break;
-                }
-                log::warn!(
-                    "[HeadsetBatt] Startup attempt {startup_attempt}/3 returned None for PID {pid:#06x}, retrying in 1s…"
-                );
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            }
-
-            result
-                .map(BatteryState::Discharging)
-                .unwrap_or_else(|| {
-                    log::warn!(
-                        "[HeadsetBatt] All startup attempts failed for PID {pid:#06x} — showing Unknown until polling loop resolves it"
-                    );
-                    BatteryState::Unknown
-                })
-        };
+        // Register the headset with Unknown battery state immediately so D-Bus
+        // registration is not delayed. The polling loop resolves the real
+        // battery level within the first 3–8 seconds and emits a signal.
+        let headset_battery = BatteryState::Unknown;
 
         log::info!("[HeadsetBatt] Initial state: {headset_battery:?}");
 
@@ -250,9 +221,9 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     log::info!("Synaptix Daemon running on org.synaptix.Daemon at /org/synaptix/Daemon");
 
     // ── Headset battery polling loop ─────────────────────────────────────────
-    // Sends an active cc=0x25/ci=0x16 query, then drains up to 5 packets from
-    // ep=0x84 (3 s timeout each). All packets are logged at DEBUG level —
-    // run the daemon with RUST_LOG=debug to diagnose "still showing ?" issues.
+    // Reads interrupt-IN packets from ep=0x84 (device pushes every ~1s).
+    // Battery = resp[2] direct 0-100%. Starts after a 3-second delay to allow
+    // the D-Bus interface to settle, then polls every 5 s.
     if !detected_headsets.is_empty() {
         let headset_conn = conn.clone();
         let headset_pids: Vec<(u16, String)> = detected_headsets
