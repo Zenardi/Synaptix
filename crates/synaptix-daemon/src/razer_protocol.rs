@@ -439,32 +439,66 @@ pub fn build_set_haptic_payload(level: u8) -> [u8; REPORT_LEN] {
 /// Length of the Kraken V4 Pro Hub proprietary HID report (bytes).
 pub const HAPTIC_REPORT_LEN: usize = 64;
 
-/// `cc` and `ci` bytes of Kraken V4 Pro status push / query packets.
+/// `cc` and `ci` bytes of Kraken V4 Pro full status push / query packets.
 /// Confirmed from Wireshark `sidehaptics.pcapng` interrupt IN responses.
 pub const HEADSET_STATUS_CC: u8 = 0x25;
 pub const HEADSET_STATUS_CI: u8 = 0x16;
+
+/// `cc` and `ci` bytes of Kraken V4 Pro **spontaneous device-status** packets.
+///
+/// These arrive automatically on ep=0x84 every poll cycle without being requested.
+/// Confirmed from `RUST_LOG=debug` output: `02 02 60 00 00 00 05 00 80 80 20 02 02 00 00 00`
+/// Battery level (0–255 scale) is in `byte[8]`.
+pub const HEADSET_DEVICE_STATUS_CC: u8 = 0x05;
+pub const HEADSET_DEVICE_STATUS_CI: u8 = 0x00;
+
+/// Minimum data_size for a `cc=0x25/ci=0x16` packet to be treated as a full status push.
+/// Wireshark push has data_size=0x5f (95). Query ACK has data_size=0x01.
+/// Anything below this threshold is an ACK, not a battery status.
+const HEADSET_STATUS_MIN_DATA_SIZE: u8 = 0x08;
 
 /// Session-global counter incremented on every haptic send.
 /// The headset uses this to sequence multi-packet updates.
 static HAPTIC_COUNTER: AtomicU8 = AtomicU8::new(9);
 
-/// Parses a 64-byte Kraken V4 Pro status push packet received on ep=0x84.
+/// Parses a 64-byte Kraken V4 Pro interrupt-IN packet received on ep=0x84.
 ///
-/// **Wireshark-confirmed format** (`sidehaptics.pcapng`):
+/// Handles two distinct packet formats observed from the device:
+///
+/// **Format A — spontaneous device-status (`cc=0x05/ci=0x00`):**
+/// Arrives automatically every poll cycle. Battery raw (0–255) is in `byte[8]`.
+/// ```text
+/// byte[6] = 0x05  cc (HEADSET_DEVICE_STATUS_CC)
+/// byte[7] = 0x00  ci (HEADSET_DEVICE_STATUS_CI)
+/// byte[8] = raw battery level (0–255 scale → *100/255 = %)
+/// ```
+///
+/// **Format B — full status push (`cc=0x25/ci=0x16`):**
+/// Only seen during active Synapse sessions (e.g. after haptic commands).
+/// Requires `byte[8] >= HEADSET_STATUS_MIN_DATA_SIZE` to distinguish from 1-byte ACKs.
+/// Battery raw (0–255) is in `byte[9]`.
 /// ```text
 /// byte[6] = 0x25  cc (HEADSET_STATUS_CC)
 /// byte[7] = 0x16  ci (HEADSET_STATUS_CI)
-/// byte[9] = raw battery level (0–255 scale → multiply by 100/255)
+/// byte[8] = data_size (must be >= 0x08 for a real push; 0x01 = query ACK)
+/// byte[9] = raw battery level (0–255 scale → *100/255 = %)
 /// ```
-/// Returns `None` when:
-/// * The packet is not a status push (`cc` or `ci` mismatch).
-/// * `raw == 0x00` — device returned zeros (no data).
-/// * `raw == 0xFF` — all-ones sentinel (unsupported / garbled).
+///
+/// Returns `None` when the packet does not contain a valid battery reading.
 pub fn parse_headset_push_packet(resp: &[u8; HAPTIC_REPORT_LEN]) -> Option<u8> {
-    if resp[6] != HEADSET_STATUS_CC || resp[7] != HEADSET_STATUS_CI {
+    let raw = if resp[6] == HEADSET_DEVICE_STATUS_CC && resp[7] == HEADSET_DEVICE_STATUS_CI {
+        // Format A: cc=0x05/ci=0x00 — battery is in byte[8]
+        resp[8]
+    } else if resp[6] == HEADSET_STATUS_CC && resp[7] == HEADSET_STATUS_CI {
+        // Format B: cc=0x25/ci=0x16 — only accept full pushes (data_size >= min)
+        if resp[8] < HEADSET_STATUS_MIN_DATA_SIZE {
+            return None; // 1-byte ACK, not a real status push
+        }
+        resp[9]
+    } else {
         return None;
-    }
-    let raw = resp[9];
+    };
+
     if raw == 0x00 || raw == 0xFF {
         return None;
     }
@@ -1093,5 +1127,71 @@ mod tests {
         for i in [3, 4, 5, 9, 10, 62, 63] {
             assert_eq!(q[i], 0x00, "byte[{i}] must be 0x00");
         }
+    }
+
+    /// cc=0x05/ci=0x00 spontaneous status packet containing battery in byte[8].
+    ///
+    /// Exact bytes observed in RUST_LOG=debug output every poll cycle:
+    ///   02 02 60 00 00 00 05 00 80 80 20 02 02 00 00 00
+    /// byte[8]=0x80=128 → 128*100/255 ≈ 50%
+    #[test]
+    fn test_parse_headset_0x05_packet_with_battery() {
+        let mut pkt = [0u8; HAPTIC_REPORT_LEN];
+        pkt[0] = 0x02; // report_id
+        pkt[1] = 0x02; // status=success
+        pkt[2] = 0x60; // txn_id
+        pkt[6] = HEADSET_DEVICE_STATUS_CC; // 0x05
+        pkt[7] = HEADSET_DEVICE_STATUS_CI; // 0x00
+        pkt[8] = 0x80; // raw battery = 128 → 50%
+        pkt[9] = 0x80;
+        pkt[10] = 0x20;
+        pkt[11] = 0x02;
+        pkt[12] = 0x02;
+
+        let pct = parse_headset_push_packet(&pkt);
+        assert_eq!(
+            pct,
+            Some(50),
+            "0x80 raw in cc=0x05 packet should decode as 50%"
+        );
+    }
+
+    /// cc=0x05/ci=0x00 packet with byte[8]=0x00 (zero battery) must be rejected.
+    #[test]
+    fn test_parse_headset_0x05_packet_zero_rejected() {
+        let mut pkt = [0u8; HAPTIC_REPORT_LEN];
+        pkt[6] = HEADSET_DEVICE_STATUS_CC; // 0x05
+        pkt[7] = HEADSET_DEVICE_STATUS_CI; // 0x00
+        pkt[8] = 0x00; // zero → invalid
+
+        assert_eq!(
+            parse_headset_push_packet(&pkt),
+            None,
+            "cc=0x05 with byte[8]=0x00 must be rejected"
+        );
+    }
+
+    /// cc=0x25/ci=0x16 with data_size=0x01 (1-byte ACK, byte[9]=0x00) must be rejected.
+    ///
+    /// Exact bytes observed in RUST_LOG=debug every poll cycle (query ACK, not a full push):
+    ///   02 02 60 00 00 00 25 16 01 00 00 01 00 00 00 00
+    /// byte[8]=0x01 means data_size=1 → this is just an ACK, not a battery status push.
+    #[test]
+    fn test_parse_headset_push_1byte_ack_rejected() {
+        let mut pkt = [0u8; HAPTIC_REPORT_LEN];
+        pkt[0] = 0x02;
+        pkt[1] = 0x02;
+        pkt[2] = 0x60;
+        pkt[6] = HEADSET_STATUS_CC; // 0x25
+        pkt[7] = HEADSET_STATUS_CI; // 0x16
+        pkt[8] = 0x01; // data_size=1 → 1-byte ACK
+        pkt[9] = 0x00; // arg[0]=0x00 (no battery data)
+        pkt[11] = 0x01;
+
+        assert_eq!(
+            parse_headset_push_packet(&pkt),
+            None,
+            "cc=0x25 1-byte ACK (byte[8]=0x01) must be rejected (not a full status push)"
+        );
     }
 }
