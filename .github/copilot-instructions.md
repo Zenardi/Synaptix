@@ -34,6 +34,8 @@ This project strictly follows a decoupled, microservice-like architecture using 
 ### Example Instruction Template for New Features or Bug Fixes
 Always follow this structured plan approach when implementing new features or fixing bugs. This ensures consistency, maintainability, and a clear audit trail of changes. Before executing any code changes, write out the plan in a markdown format like this:
 
+On new features and bug fixes always write tests and follow TDD - Test Driven Development. This means you should write the test first, see it fail, then implement the logic to make it pass. This ensures that your code is testable and that you have a clear specification of what the code should do before you write it.
+
 ```markdown
 **Milestone [NUMBER]: [FEATURE NAME]**
 
