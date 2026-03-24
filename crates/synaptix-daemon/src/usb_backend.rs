@@ -1,6 +1,6 @@
 use crate::razer_protocol::{
-    build_battery_query_payload, build_charging_query_payload, build_headset_battery_query,
-    build_headset_status_query, parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY,
+    build_battery_query_payload, build_charging_query_payload, build_headset_status_query,
+    build_headset_wake_query, parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY,
     CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
@@ -397,23 +397,28 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
     let iface = iface_u8 as u16;
     let timeout = std::time::Duration::from_secs(3);
 
-    // ── Phase 1: Standard battery query cc=0x07/ci=0x80 ──────────────────────
-    let std_query = build_headset_battery_query();
-    if let Err(e) = handle.write_control(0x21, 0x09, 0x0202, iface, &std_query, timeout) {
-        log::debug!("[HeadsetBatt] SET_REPORT(cc=0x07/ci=0x80) failed (non-fatal): {e:?}");
-    } else {
-        log::debug!("[HeadsetBatt] Sent standard battery query cc=0x07/ci=0x80");
+    // ── Phase 1: 90-byte wake query to Interface 2 ────────────────────────────
+    // Sending this READ-ONLY firmware-version query to Interface 2 (wIndex=0x0002)
+    // causes the headset firmware to push a cc=0x25/ci=0x16 status packet on
+    // Interface 4 (ep=0x84) containing the real battery level.
+    // This was confirmed by Wireshark: cc=0x25 pushes appear only after Interface 2
+    // receives commands (cc=0x03 LED commands in all three captured sessions).
+    let wake_query = build_headset_wake_query();
+    match handle.write_control(0x21, 0x09, 0x0300, 0x0002, &wake_query, timeout) {
+        Ok(_) => log::debug!("[HeadsetBatt] Sent 90-byte wake query to Interface 2"),
+        Err(e) => log::debug!("[HeadsetBatt] Wake query to Interface 2 failed (non-fatal): {e:?}"),
     }
 
-    // ── Phase 2: Status push query cc=0x25/ci=0x16 ───────────────────────────
+    // ── Phase 2: Status push query cc=0x25/ci=0x16 (best-effort fallback) ────
     let status_query = build_headset_status_query();
     if let Err(e) = handle.write_control(0x21, 0x09, 0x0202, iface, &status_query, timeout) {
         log::debug!("[HeadsetBatt] SET_REPORT(cc=0x25/ci=0x16) failed (non-fatal): {e:?}");
     }
 
     // ── Drain and filter ──────────────────────────────────────────────────────
-    // Read up to MAX_DRAIN packets. parse_headset_push_packet handles all three
-    // formats: cc=0x07 (highest), cc=0x25 (Wireshark push), cc=0x05 (fallback).
+    // Read up to MAX_DRAIN packets. parse_headset_push_packet handles:
+    //   - cc=0x25/ci=0x16 (highest priority, real push triggered by wake query)
+    //   - cc=0x05/ci=0x00 (fallback, spontaneous heartbeat every ~2s)
     for attempt in 1..=MAX_DRAIN {
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
         match handle.read_interrupt(0x84, &mut resp, timeout) {
@@ -423,10 +428,11 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
             }
             Ok(_) => {
                 log::debug!(
-                    "[HeadsetBatt] packet #{attempt}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                    resp[0], resp[1], resp[2], resp[3], resp[4], resp[5],
-                    resp[6], resp[7], resp[8], resp[9], resp[10], resp[11],
-                    resp[12], resp[13], resp[14], resp[15],
+                    "[HeadsetBatt] packet #{attempt} (64 bytes): {}",
+                    resp.iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 );
 
                 if let Some(pct) = parse_headset_push_packet(&resp) {
