@@ -439,23 +439,11 @@ pub fn build_set_haptic_payload(level: u8) -> [u8; REPORT_LEN] {
 /// Length of the Kraken V4 Pro Hub proprietary HID report (bytes).
 pub const HAPTIC_REPORT_LEN: usize = 64;
 
-/// `cc` and `ci` bytes of Kraken V4 Pro full status push / query packets.
-/// Confirmed from Wireshark `sidehaptics.pcapng` interrupt IN responses.
-pub const HEADSET_STATUS_CC: u8 = 0x25;
-pub const HEADSET_STATUS_CI: u8 = 0x16;
-
-/// `cc` and `ci` bytes of Kraken V4 Pro **spontaneous device-status** packets.
+/// HID Report ID for Kraken V4 Pro interrupt-IN and output reports.
 ///
-/// These arrive automatically on ep=0x84 every ~2 s without being requested.
-/// Observed: `02 02 60 00 00 00 05 00 80 80 20 02 02 00 00 00`
-/// Battery raw (0–255) is in `byte[9]` (same field as cc=0x25 pushes).
-pub const HEADSET_DEVICE_STATUS_CC: u8 = 0x05;
-pub const HEADSET_DEVICE_STATUS_CI: u8 = 0x00;
-
-/// Minimum data_size for a `cc=0x25/ci=0x16` packet to be treated as a full status push.
-/// Wireshark push has data_size=0x5f (95). Query ACK has data_size=0x01.
-/// Anything below this threshold is an ACK, not a battery status.
-const HEADSET_STATUS_MIN_DATA_SIZE: u8 = 0x08;
+/// Wireshark-confirmed (`battery_synapse.pcapng`): all 78 interrupt-IN packets
+/// on ep=0x84 begin with `0x02`.
+pub const HEADSET_HID_REPORT_ID: u8 = 0x02;
 
 /// Session-global counter incremented on every haptic send.
 /// The headset uses this to sequence multi-packet updates.
@@ -463,89 +451,29 @@ static HAPTIC_COUNTER: AtomicU8 = AtomicU8::new(9);
 
 /// Parses a 64-byte Kraken V4 Pro interrupt-IN packet received on ep=0x84.
 ///
-/// Handles two packet formats, checked in priority order:
-///
-/// **Format B — full status push (`cc=0x25/ci=0x16`, highest priority):**
-/// Only seen during active device sessions (e.g. after the Interface 2 wake query).
-/// Requires `byte[8] >= HEADSET_STATUS_MIN_DATA_SIZE` to distinguish from 1-byte ACKs.
-/// Battery raw (0–255) is in `byte[9]`.
+/// **Wireshark ground truth (`battery_synapse.pcapng`, 78 packets, all identical):**
 /// ```text
-/// byte[6] = 0x25  cc (HEADSET_STATUS_CC)
-/// byte[7] = 0x16  ci (HEADSET_STATUS_CI)
-/// byte[8] = data_size (must be >= 0x08 for a real push; 0x01 = query ACK)
-/// byte[9] = raw battery level (0–255 scale → *100/255 = %)
+/// 02 02 60 00 00 00 00 17 09 00 00 00 ...
 /// ```
+/// - `byte[0]` = `0x02` — HID Report ID (validates the packet)
+/// - `byte[1]` = `0x02` — status/type constant
+/// - **`byte[2]`** = battery percentage **direct, 0–100 decimal** (no scale!)
+///   e.g. `0x60` = 96 = **96%** battery
 ///
-/// **Format A — spontaneous device-status (`cc=0x05/ci=0x00`, fallback):**
-/// Arrives automatically every ~2 s on ep=0x84 without being requested.
-/// Battery raw (0–255) is in `byte[9]` (same field as Format B).
-/// ```text
-/// byte[6] = 0x05  cc (HEADSET_DEVICE_STATUS_CC)
-/// byte[7] = 0x00  ci (HEADSET_DEVICE_STATUS_CI)
-/// byte[9] = raw battery level (0–255 scale → *100/255 = %)
-/// ```
+/// The device pushes these packets automatically on ep=0x84 every ~1 second
+/// without requiring any trigger or wake query.
 ///
-/// Returns `None` when the packet does not contain a valid battery reading.
+/// Returns `Some(percent)` when `byte[0] == 0x02` and `byte[2]` is in 1–100.
+/// Returns `None` for all other packets.
 pub fn parse_headset_push_packet(resp: &[u8; HAPTIC_REPORT_LEN]) -> Option<u8> {
-    let raw = if resp[6] == HEADSET_STATUS_CC && resp[7] == HEADSET_STATUS_CI {
-        // Format B: cc=0x25/ci=0x16 — only accept full pushes (data_size >= min)
-        if resp[8] < HEADSET_STATUS_MIN_DATA_SIZE {
-            return None; // 1-byte ACK, not a real status push
-        }
-        resp[9]
-    } else if resp[6] == HEADSET_DEVICE_STATUS_CC && resp[7] == HEADSET_DEVICE_STATUS_CI {
-        // Format A: cc=0x05/ci=0x00 — battery is in byte[9]
-        resp[9]
-    } else {
-        return None;
-    };
-
-    if raw == 0x00 || raw == 0xFF {
+    if resp[0] != HEADSET_HID_REPORT_ID {
         return None;
     }
-    Some(((raw as u16 * 100) / 255) as u8)
-}
-
-/// Builds a 90-byte standard Razer firmware-version query sent to **Interface 2**
-/// (`wIndex=0x0002`) of the Kraken V4 Pro.
-///
-/// Sending this via `SET_REPORT` (`bmRequestType=0x21, bRequest=0x09, wValue=0x0300,
-/// wIndex=0x0002, wLength=90`) causes the headset firmware to push a `cc=0x25/ci=0x16`
-/// status packet on Interface 4 (ep=0x84) containing the real battery level.
-///
-/// This is a **READ-ONLY** operation — it requests the firmware version, which does not
-/// change any device state or LED configuration.
-///
-/// 90-byte standard Razer layout (`razerchromacommon.c` `get_razer_report` format):
-/// ```text
-/// byte[0]  status     = 0x00  (host→device query)
-/// byte[1]  txn_id     = 0x1F  (standard for query packets)
-/// byte[2]  rem_hi     = 0x00
-/// byte[3]  rem_lo     = 0x00
-/// byte[4]  proto      = 0x00
-/// byte[5]  data_size  = 0x00  (read request, no payload)
-/// byte[6]  cc         = 0x00  (misc command class)
-/// byte[7]  ci         = 0x81  (get_firmware_version, READ-ONLY)
-/// bytes[8..89]        = 0x00
-/// ```
-pub fn build_headset_wake_query() -> [u8; 90] {
-    let mut buf = [0u8; 90];
-    buf[1] = 0x1F; // transaction_id
-    buf[6] = 0x00; // command_class = misc
-    buf[7] = 0x81; // command_id = get_firmware_version (READ-ONLY)
-    buf
-}
-
-/// Builds a 64-byte HID query that asks the Kraken V4 Pro to emit a status
-/// push packet (`cc=0x25 / ci=0x16`) containing the battery level.
-pub fn build_headset_status_query() -> [u8; HAPTIC_REPORT_LEN] {
-    let mut buf = [0u8; HAPTIC_REPORT_LEN];
-    buf[0] = 0x02; // report_id
-    buf[2] = 0x60; // transaction_id
-    buf[6] = HEADSET_STATUS_CC; // 0x25
-    buf[7] = HEADSET_STATUS_CI; // 0x16
-    buf[8] = 0x01; // data_size
-    buf
+    let pct = resp[2];
+    if pct == 0 || pct > 100 {
+        return None;
+    }
+    Some(pct)
 }
 
 /// Builds a 64-byte HID output report that sets the Kraken V4 Pro haptic intensity.
@@ -1057,197 +985,111 @@ mod tests {
         assert_eq!(report[16], 81, "haptic_b at max level");
     }
 
-    // ── Kraken V4 Pro headset status push packet tests ────────────────────────
+    // ── Kraken V4 Pro headset HID battery packet tests ────────────────────────
     //
-    // Byte arrays taken verbatim from Wireshark `sidehaptics.pcapng`.
+    // Wireshark ground truth: `battery_synapse.pcapng` captured on Windows with
+    // Razer Synapse. 78 interrupt-IN packets on ep=0x84, ALL identical:
+    //   02 02 60 00 00 00 00 17 09 00 00 00 ...
+    // byte[0]=0x02 (HID Report ID), byte[1]=0x02, byte[2]=0x60=96 (battery 96%)
 
-    /// Valid status push: byte[9]=0x80 → (128 * 100) / 255 = 50 %
-    ///
-    /// Full first-16-bytes from Wireshark:
-    ///   02 02 60 00 00 00 25 16 5f 80 8b 01 01 01 06 00
+    /// Real Wireshark packet: `02 02 60 00 00 00 00 17 09 00 ...`
+    /// byte[2] = 0x60 = 96 → battery 96 %
     #[test]
-    fn test_parse_headset_push_valid_wireshark() {
+    fn test_parse_headset_hid_packet_real_wireshark_data() {
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
-        resp[0] = 0x02; // report_id
-        resp[1] = 0x02; // status=success
-        resp[2] = 0x60; // txn_id
-        resp[6] = HEADSET_STATUS_CC; // 0x25
-        resp[7] = HEADSET_STATUS_CI; // 0x16
-        resp[8] = 0x5f; // data_size=95
-        resp[9] = 0x80; // raw=128 → 50%
-        resp[10] = 0x8b;
-        resp[11] = 0x01;
-        resp[12] = 0x01;
-        resp[13] = 0x01;
-        resp[14] = 0x06;
+        resp[0] = 0x02; // HID Report ID
+        resp[1] = 0x02; // status constant
+        resp[2] = 0x60; // battery = 96 (0x60 decimal = 96)
+        resp[7] = 0x17;
+        resp[8] = 0x09;
 
         let pct = parse_headset_push_packet(&resp);
-        assert_eq!(pct, Some(50), "0x80 (128) should decode as 50%");
+        assert_eq!(
+            pct,
+            Some(96),
+            "0x60=96 in byte[2] must decode as 96% (direct percent, no scale)"
+        );
     }
 
-    /// The haptic ACK packet (cc=0x00/ci=0x17) must be rejected.
-    ///
-    /// Full first-16-bytes from Wireshark:
-    ///   02 02 60 00 00 00 00 17 09 00 00 00 00 00 00 00
+    /// Battery at 100% (0x64): must return Some(100).
     #[test]
-    fn test_parse_headset_push_wrong_cc_haptic_ack() {
+    fn test_parse_headset_hid_packet_full_battery() {
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
         resp[0] = 0x02;
-        resp[1] = 0x02;
-        resp[2] = 0x60;
-        resp[6] = 0x00; // cc=0x00 (haptic ACK, NOT a status push)
-        resp[7] = 0x17; // ci=0x17
-        resp[8] = 0x09;
-        // All data bytes remain 0x00
-
-        assert_eq!(
-            parse_headset_push_packet(&resp),
-            None,
-            "haptic ACK (cc=0x00/ci=0x17) must not be decoded as battery"
-        );
+        resp[2] = 100;
+        assert_eq!(parse_headset_push_packet(&resp), Some(100));
     }
 
-    /// Packets with raw==0x00 (device returned zeros) must be rejected.
+    /// Battery at 1% (minimum valid): must return Some(1).
     #[test]
-    fn test_parse_headset_push_raw_zero_rejected() {
+    fn test_parse_headset_hid_packet_one_percent() {
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
-        resp[6] = HEADSET_STATUS_CC;
-        resp[7] = HEADSET_STATUS_CI;
-        resp[9] = 0x00; // raw=0 → invalid
-
-        assert_eq!(
-            parse_headset_push_packet(&resp),
-            None,
-            "raw=0x00 must be rejected"
-        );
+        resp[0] = 0x02;
+        resp[2] = 1;
+        assert_eq!(parse_headset_push_packet(&resp), Some(1));
     }
 
-    /// Packets with raw==0xFF (all-ones sentinel) must be rejected.
+    /// byte[2]=0x00 (no data / device not ready) must return None.
     #[test]
-    fn test_parse_headset_push_raw_ff_rejected() {
+    fn test_parse_headset_hid_packet_zero_rejected() {
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
-        resp[6] = HEADSET_STATUS_CC;
-        resp[7] = HEADSET_STATUS_CI;
-        resp[9] = 0xFF; // raw=255 → invalid sentinel
-
+        resp[0] = 0x02;
+        resp[2] = 0x00;
         assert_eq!(
             parse_headset_push_packet(&resp),
             None,
-            "raw=0xFF must be rejected"
+            "byte[2]=0 must be rejected"
         );
     }
 
-    /// Verify `build_headset_status_query` byte layout.
-    /// We expect: byte[0]=0x02, byte[2]=0x60, byte[6]=0x25, byte[7]=0x16, byte[8]=0x01.
-    /// All other bytes must be 0x00.
+    /// byte[2]=101 (out of range) must return None.
     #[test]
-    fn test_build_headset_status_query_layout() {
-        let q = build_headset_status_query();
-        assert_eq!(q.len(), HAPTIC_REPORT_LEN, "must be exactly 64 bytes");
-        assert_eq!(q[0], 0x02, "report_id must be 0x02");
-        assert_eq!(q[1], 0x00, "status must be 0x00 (host→device)");
-        assert_eq!(q[2], 0x60, "transaction_id must be 0x60");
-        assert_eq!(q[6], HEADSET_STATUS_CC, "cc must be 0x25");
-        assert_eq!(q[7], HEADSET_STATUS_CI, "ci must be 0x16");
-        assert_eq!(q[8], 0x01, "data_size must be 0x01");
-        // All other bytes must be zero (no stray bytes)
-        for i in [3, 4, 5, 9, 10, 62, 63] {
-            assert_eq!(q[i], 0x00, "byte[{i}] must be 0x00");
-        }
-    }
-
-    /// cc=0x05/ci=0x00 spontaneous status packet — battery is in byte[9].
-    ///
-    /// Exact bytes observed in RUST_LOG=debug output every poll cycle:
-    ///   02 02 60 00 00 00 05 00 80 80 20 02 02 00 00 00
-    /// byte[9]=0x80=128 → 128*100/255 ≈ 50%
-    #[test]
-    fn test_parse_headset_0x05_packet_with_battery() {
-        let mut pkt = [0u8; HAPTIC_REPORT_LEN];
-        pkt[0] = 0x02; // report_id
-        pkt[1] = 0x02; // status=success
-        pkt[2] = 0x60; // txn_id
-        pkt[6] = HEADSET_DEVICE_STATUS_CC; // 0x05
-        pkt[7] = HEADSET_DEVICE_STATUS_CI; // 0x00
-        pkt[8] = 0x80; // byte[8] = status/flags (not battery)
-        pkt[9] = 0x80; // byte[9] = raw battery = 128 → 50%
-        pkt[10] = 0x20;
-        pkt[11] = 0x02;
-        pkt[12] = 0x02;
-
-        let pct = parse_headset_push_packet(&pkt);
+    fn test_parse_headset_hid_packet_over_100_rejected() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02;
+        resp[2] = 101;
         assert_eq!(
-            pct,
-            Some(50),
-            "0x80 raw in cc=0x05 packet byte[9] should decode as 50%"
-        );
-    }
-
-    /// Format A uses byte[9], NOT byte[8]. Verify by setting byte[8]=0x00 (would be
-    /// rejected by old code) and byte[9]=0xCC (valid, 0xCC*100/255 = 80%).
-    #[test]
-    fn test_parse_headset_0x05_uses_byte9_not_byte8() {
-        let mut pkt = [0u8; HAPTIC_REPORT_LEN];
-        pkt[6] = HEADSET_DEVICE_STATUS_CC; // 0x05
-        pkt[7] = HEADSET_DEVICE_STATUS_CI; // 0x00
-        pkt[8] = 0x00; // byte[8] = 0 (would be rejected if we used byte[8])
-        pkt[9] = 0xCC; // byte[9] = 204 → 204*100/255 = 80%
-
-        let pct = parse_headset_push_packet(&pkt);
-        assert_eq!(
-            pct,
-            Some(80),
-            "Format A must read byte[9]: 0xCC should decode as 80%"
-        );
-    }
-
-    /// cc=0x05/ci=0x00 packet with byte[9]=0x00 (zero) must be rejected.
-    #[test]
-    fn test_parse_headset_0x05_packet_zero_rejected() {
-        let mut pkt = [0u8; HAPTIC_REPORT_LEN];
-        pkt[6] = HEADSET_DEVICE_STATUS_CC; // 0x05
-        pkt[7] = HEADSET_DEVICE_STATUS_CI; // 0x00
-        pkt[8] = 0x80; // byte[8] could be anything
-        pkt[9] = 0x00; // byte[9] = zero → invalid
-
-        assert_eq!(
-            parse_headset_push_packet(&pkt),
+            parse_headset_push_packet(&resp),
             None,
-            "cc=0x05 with byte[9]=0x00 must be rejected"
+            "byte[2]>100 must be rejected as out-of-range"
         );
     }
 
-    /// cc=0x07/ci=0x80 (standard mouse/keyboard battery query) must return None —
-    /// this command is not supported by the Kraken V4 Pro (confirmed: never observed
-    /// in any Wireshark capture of Razer Synapse with this device).
+    /// byte[2]=0xFF (sentinel / garbage) must return None.
     #[test]
-    fn test_parse_headset_cc07_always_returns_none() {
-        let mut pkt = [0u8; HAPTIC_REPORT_LEN];
-        pkt[6] = 0x07; // cc=0x07 (mouse/keyboard battery — unsupported on headset)
-        pkt[7] = 0x80; // ci=0x80
-        pkt[10] = 74; // would be valid battery if Format C existed
-
+    fn test_parse_headset_hid_packet_ff_rejected() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02;
+        resp[2] = 0xFF;
         assert_eq!(
-            parse_headset_push_packet(&pkt),
+            parse_headset_push_packet(&resp),
             None,
-            "cc=0x07/ci=0x80 is not supported by this headset and must return None"
+            "byte[2]=0xFF must be rejected"
         );
     }
 
-    /// `build_headset_wake_query` must produce a 90-byte READ-ONLY firmware-version
-    /// query with cc=0x00/ci=0x81 at the correct offsets.
+    /// Packet with wrong Report ID (byte[0] != 0x02) must return None.
+    /// e.g. all-zero packet, or other HID report types.
     #[test]
-    fn test_build_headset_wake_query_layout() {
-        let q = build_headset_wake_query();
-        assert_eq!(q.len(), 90, "must be exactly 90 bytes");
-        assert_eq!(q[0], 0x00, "status byte must be 0x00 (query)");
-        assert_eq!(q[1], 0x1F, "transaction_id must be 0x1F");
-        assert_eq!(q[5], 0x00, "data_size must be 0x00 (read request)");
-        assert_eq!(q[6], 0x00, "cc must be 0x00 (misc)");
-        assert_eq!(q[7], 0x81, "ci must be 0x81 (get_firmware_version)");
-        // All remaining bytes must be zero
-        for i in [2, 3, 4, 8, 9, 88, 89] {
-            assert_eq!(q[i], 0x00, "byte[{i}] must be 0x00");
-        }
+    fn test_parse_headset_hid_packet_wrong_report_id_rejected() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x01; // wrong Report ID
+        resp[2] = 96; // would be valid battery if ID were correct
+        assert_eq!(
+            parse_headset_push_packet(&resp),
+            None,
+            "byte[0] != 0x02 must be rejected"
+        );
+    }
+
+    /// All-zero packet (uninitialised buffer) must return None.
+    #[test]
+    fn test_parse_headset_hid_packet_all_zeros_rejected() {
+        let resp = [0u8; HAPTIC_REPORT_LEN];
+        assert_eq!(
+            parse_headset_push_packet(&resp),
+            None,
+            "all-zero packet must be rejected"
+        );
     }
 }
