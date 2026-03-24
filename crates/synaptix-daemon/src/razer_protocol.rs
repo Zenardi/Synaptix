@@ -443,30 +443,6 @@ pub const HAPTIC_REPORT_LEN: usize = 64;
 /// The headset uses this to sequence multi-packet updates.
 static HAPTIC_COUNTER: AtomicU8 = AtomicU8::new(9);
 
-/// Builds a 64-byte HID query to read the Kraken V4 Pro headset battery level.
-///
-/// Uses the same USB transport as haptic commands (wValue=0x0202, wIndex=0x0004)
-/// with `CMD_CLASS_BATTERY` / `CMD_ID_BATTERY_LEVEL` (0x07/0x80) from the
-/// standard Razer protocol. A CRC (XOR of bytes 0–61) is placed at byte[62]
-/// following the pattern observed in DSP commands from the same device.
-///
-/// **Note**: This query format is inferred from the general Razer command
-/// structure and has not yet been confirmed against a battery-specific Wireshark
-/// capture. If the device does not respond correctly the caller should fall back
-/// to `BatteryState::Unknown`.
-pub fn build_headset_battery_query() -> [u8; HAPTIC_REPORT_LEN] {
-    let mut buf = [0u8; HAPTIC_REPORT_LEN];
-    buf[0] = 0x02; // report_id
-    buf[2] = 0x60; // transaction_id
-    buf[6] = CMD_CLASS_BATTERY; // 0x07
-    buf[7] = CMD_ID_BATTERY_LEVEL; // 0x80
-    buf[8] = 0x01; // data_size
-                   // XOR checksum at byte[62] — same pattern as DSP commands
-    let crc: u8 = buf[..62].iter().fold(0u8, |acc, b| acc ^ b);
-    buf[62] = crc;
-    buf
-}
-
 /// Builds a 64-byte HID output report that sets the Kraken V4 Pro haptic intensity.
 ///
 /// **Wireshark-verified layout** captured from Razer Synapse 3 on Windows

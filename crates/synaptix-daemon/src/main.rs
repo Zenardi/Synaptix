@@ -179,11 +179,12 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         let device_id = format!("kraken-v4-pro-{pid:04x}");
         log::info!("[Detect] {} on USB: PID={pid:#06x}", profile.name);
 
-        // Attempt a best-effort battery query via the 64-byte HID protocol.
-        // Falls back to BatteryState::Unknown if the device doesn't respond
-        // (query format unverified against a Wireshark battery capture).
+        // Attempt to catch the first status push packet from the headset (best-effort,
+        // 200 ms window). The device pushes these asynchronously — if none arrives
+        // in time, we start with Unknown and the background poller will fill it in
+        // within a few seconds.
         let headset_battery =
-            tokio::task::spawn_blocking(move || usb_backend::query_headset_battery(pid))
+            tokio::task::spawn_blocking(move || usb_backend::read_headset_status_push(pid))
                 .await
                 .ok()
                 .flatten()
@@ -230,6 +231,65 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     };
 
     log::info!("Synaptix Daemon running on org.synaptix.Daemon at /org/synaptix/Daemon");
+
+    // ── Headset battery polling loop ─────────────────────────────────────────
+    // The Kraken V4 Pro pushes status packets (cc=0x25/ci=0x16) on ep=0x84
+    // periodically (~every 5s) without needing a query command. We listen for
+    // these every 2s and update the headset battery when a push is received.
+    if !detected_headsets.is_empty() {
+        let headset_conn = conn.clone();
+        let headset_pids: Vec<(u16, String)> = detected_headsets
+            .iter()
+            .map(|(pid, _)| (*pid, format!("kraken-v4-pro-{pid:04x}")))
+            .collect();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+                for (pid, device_id) in &headset_pids {
+                    let pid = *pid;
+                    let device_id = device_id.clone();
+
+                    let pct_opt = tokio::task::spawn_blocking(move || {
+                        usb_backend::read_headset_status_push(pid)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+
+                    let Some(pct) = pct_opt else { continue };
+                    let new_state = BatteryState::Discharging(pct);
+
+                    let Ok(iface_ref) = headset_conn
+                        .object_server()
+                        .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                        .await
+                    else {
+                        continue;
+                    };
+
+                    let state_json = serde_json::to_string(&new_state)
+                        .unwrap_or_else(|_| "\"Discharging\"".to_string());
+
+                    {
+                        let mut iface = iface_ref.get_mut().await;
+                        iface.update_battery(&device_id, new_state.clone());
+                    }
+
+                    DeviceManager::battery_changed(
+                        iface_ref.signal_emitter(),
+                        &device_id,
+                        &state_json,
+                    )
+                    .await
+                    .ok();
+
+                    log::info!("[HeadsetBatt] Poll: {device_id} → {new_state:?}");
+                }
+            }
+        });
+    }
 
     // ── Connection-watch task (every 1 s) ────────────────────────────────────
     // Cheap USB descriptor scan — no device open, no I/O. Fires a D-Bus signal

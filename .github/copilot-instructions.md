@@ -29,3 +29,39 @@ This project strictly follows a decoupled, microservice-like architecture using 
 1. **Test-Driven Development:** Always write failing tests first, especially in `synaptix-protocol`. 
 2. **Never write hardware polling logic in the Tauri app.** Hardware is the exclusive domain of `synaptix-daemon`.
 3. **Always update `synaptix-protocol` first** when defining a new device or D-Bus message.
+
+
+### Example Instruction Template for New Features or Bug Fixes
+Always follow this structured plan approach when implementing new features or fixing bugs. This ensures consistency, maintainability, and a clear audit trail of changes. Before executing any code changes, write out the plan in a markdown format like this:
+
+```markdown
+**Milestone [NUMBER]: [FEATURE NAME]**
+
+We are expanding the Synaptix architecture. We need to [ONE SENTENCE EXPLANATION OF THE GOAL AND WHY IT MATTERS].
+
+**Your Task: [ACTIONABLE SUMMARY OF THE GOAL]**
+
+**Step 1: The Data Contract (`[CRATE_NAME/FILE_PATH]`)**
+* Open `[EXACT_FILE_PATH]`.
+* Update the [ENUM/STRUCT/TRAIT] to include `[NEW_VARIANTS_OR_FIELDS]`.
+
+**Step 2: Core Logic & Payload Math (`[CRATE_NAME/FILE_PATH]`)**
+* Open `[EXACT_FILE_PATH]`.
+* Create the function `[FUNCTION_SIGNATURE]`.
+* **CRITICAL RULES:** [INSERT ANY HARDCODED HEX VALUES, USB PIDS, OR MATH FORMULAS HERE. DO NOT LET THE AI GUESS].
+
+**Step 3: TDD Verification**
+* Write a test `[TEST_NAME]` in the same file.
+* Assert that the function produces this exact expected output: `[INSERT EXPECTED BYTE ARRAY OR STATE HERE]`.
+
+**Step 4: Device Routing & Wiring (`[CRATE_NAME/FILE_PATH]`)**
+* Open `[EXACT_FILE_PATH]`.
+* Update the [D-BUS METHOD / POLLING LOOP / ROUTER] to handle the new data contract. 
+* Connect it to the core logic built in Step 2.
+
+**Step 5: Frontend Integration (If Applicable)**
+* Open `[REACT_COMPONENT_PATH]`.
+* Add the UI elements to trigger this state. Ensure the payload matches the expected JSON structure for the Tauri D-Bus bridge.
+
+**Stop immediately after Step [X] is complete and the tests are green. Do not refactor unrelated code unless it is really necessary for the new feature or bug fix.**
+```

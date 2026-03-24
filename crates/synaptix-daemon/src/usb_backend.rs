@@ -1,7 +1,7 @@
 use crate::razer_protocol::{
-    build_battery_query_payload, build_charging_query_payload, build_headset_battery_query,
-    validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS,
-    HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
+    build_battery_query_payload, build_charging_query_payload, validate_response,
+    CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN,
+    RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
@@ -373,73 +373,51 @@ fn query_charging_status(
     Err(rusb::Error::Io)
 }
 
-/// Attempts to read the Kraken V4 Pro headset battery level using the 64-byte
-/// HID protocol (wValue=0x0202, wIndex=0x0004 on Interface 4).
+/// Attempts to read the Kraken V4 Pro headset battery from an **unsolicited push
+/// packet** on interrupt IN endpoint 0x84.
 ///
-/// **Protocol confirmed from Wireshark** (`haptics_synapse.pcapng`):
-/// - Commands are sent via HID SET_REPORT control transfer (wValue=0x0202)
-/// - Responses come back on the **interrupt IN endpoint 0x84**, NOT via GET_REPORT.
-///   All 26 haptic ACKs in the capture used interrupt IN; resp[6] is always 0x00
-///   (cmd_class is not echoed); resp[7] carries the echoed cmd_id.
+/// **Protocol reverse-engineered from `sidehaptics.pcapng`**:
+/// The device pushes status packets periodically (~every 5 s) WITHOUT any query.
+/// These packets have `cc=0x25 / ci=0x16` and carry the raw battery level at
+/// `byte[9]` (0–255 scale, same as Razer mouse protocol: `level * 100 / 255`).
 ///
-/// Returns `Some(percent)` on success or `None` if the device does not respond
-/// as expected. Callers should record `BatteryState::Unknown` on `None`.
-pub fn query_headset_battery(product_id: u16) -> Option<u8> {
-    let (handle, iface_u8) = open_razer_device(product_id)
-        .inspect_err(|e| eprintln!("[HeadsetBatt] Failed to open device: {e:?}"))
+/// No SET_REPORT command is sent — we simply listen on ep=0x84.
+/// If no push packet arrives within the 200 ms window, `None` is returned and
+/// the caller should retain the last-known state (or `BatteryState::Unknown`).
+pub fn read_headset_status_push(product_id: u16) -> Option<u8> {
+    // STATUS_PUSH_CC / STATUS_PUSH_CI confirmed from Wireshark sidehaptics.pcapng:
+    // byte[6]=0x25, byte[7]=0x16, byte[9]=raw_battery (0-255).
+    const STATUS_PUSH_CC: u8 = 0x25;
+    const STATUS_PUSH_CI: u8 = 0x16;
+
+    let (handle, _iface) = open_razer_device(product_id)
+        .inspect_err(|e| log::debug!("[HeadsetBatt] open_razer_device failed: {e:?}"))
         .ok()?;
 
-    let iface = iface_u8 as u16;
-    let timeout = std::time::Duration::from_millis(500);
-    let query = build_headset_battery_query();
-
-    // Send query via HID SET_REPORT (wValue=0x0202 = Report Type 2, Report ID 2)
-    handle
-        .write_control(0x21, 0x09, 0x0202, iface, &query, timeout)
-        .inspect_err(|e| eprintln!("[HeadsetBatt] SET_REPORT failed: {e:?}"))
-        .ok()?;
-
-    std::thread::sleep(std::time::Duration::from_millis(10));
-
-    // Read response from interrupt IN endpoint 0x84 (ep=0x04 | direction-IN bit 0x80).
-    // Wireshark confirms all Kraken V4 Pro responses use this path, not GET_REPORT.
+    let timeout = std::time::Duration::from_millis(200);
     let mut resp = [0u8; HAPTIC_REPORT_LEN];
+
     handle
         .read_interrupt(0x84, &mut resp, timeout)
-        .inspect_err(|e| eprintln!("[HeadsetBatt] read_interrupt(0x84) failed: {e:?}"))
+        .inspect_err(|e| log::debug!("[HeadsetBatt] read_interrupt: {e:?}"))
         .ok()?;
 
-    // byte[1] = status: 0x02 = success
-    if resp[1] != 0x02 {
-        eprintln!(
-            "[HeadsetBatt] Unexpected response status: 0x{:02x}",
-            resp[1]
-        );
-        return None;
-    }
-
-    // byte[6] is always 0x00 in responses (cmd_class not echoed).
-    // byte[7] echoes the cmd_id — verify it matches our battery query.
-    if resp[7] != CMD_ID_BATTERY_LEVEL {
-        eprintln!(
-            "[HeadsetBatt] Response cmd_id mismatch: 0x{:02x} (expected 0x{CMD_ID_BATTERY_LEVEL:02x})",
+    if resp[6] != STATUS_PUSH_CC || resp[7] != STATUS_PUSH_CI {
+        log::debug!(
+            "[HeadsetBatt] Not a status push (got cc=0x{:02x}/ci=0x{:02x})",
+            resp[6],
             resp[7]
         );
         return None;
     }
 
     let raw = resp[9];
-    // 0x00 = device echoed zeros (command not executed).
-    // 0xFF = device filled unset byte with all-ones (common "not supported" pattern).
-    // Both map to an implausible percentage and are rejected.
     if raw == 0 || raw == 0xFF {
-        eprintln!(
-            "[HeadsetBatt] Response byte[9]=0x{raw:02x} — treating as unsupported (raw 0/255 is garbage)."
-        );
+        log::debug!("[HeadsetBatt] Push byte[9]=0x{raw:02x} — invalid, ignoring.");
         return None;
     }
 
     let pct = ((raw as u16 * 100) / 255) as u8;
-    println!("[HeadsetBatt] Level: raw={raw}/255 → {pct}%");
+    log::info!("[HeadsetBatt] Status push: byte[9]=0x{raw:02x} → {pct}%");
     Some(pct)
 }
