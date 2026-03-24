@@ -22,6 +22,10 @@ Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https:
 
 ![synaptix](./docs/synaptix.png)
 
+![synaptix](./docs/headset_audio.png)
+
+
+
 ---
 
 ## ⚠️ Project Status
@@ -41,6 +45,11 @@ Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https:
   - [⚠️ Project Status](#️-project-status)
   - [Table of Contents](#table-of-contents)
   - [Features](#features)
+    - [🖱️ Mouse Control](#️-mouse-control)
+    - [🎧 Headset Control](#-headset-control)
+    - [🔔 System Tray](#-system-tray)
+    - [📡 Architecture \& IPC](#-architecture--ipc)
+    - [🧪 Quality](#-quality)
   - [Architecture](#architecture)
     - [Data flow](#data-flow)
   - [Pre-requisites](#pre-requisites)
@@ -86,11 +95,32 @@ Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https:
 
 ## Features
 
-- 🖱️ **Real hardware communication** — writes RGB payloads directly to Razer devices via raw USB (no kernel module required).
-- 📡 **Event-driven D-Bus architecture** — the daemon broadcasts `BatteryChanged` signals; the UI reacts instantly without polling.
-- 🎨 **Synapse-inspired UI** — frameless dark window with animated glowing battery rings and a per-device RGB color picker.
-- ⚡ **Battery-aware polling** — hardware is only queried once per minute, and the D-Bus signal is suppressed when the value has not changed, preserving the mouse's wireless sleep state.
-- 🧪 **Strictly TDD** — every layer (protocol types, daemon logic, USB payload math, React components) was built test-first.
+### 🖱️ Mouse Control
+- **Real-time battery** — live percentage + charging state displayed in the UI with an animated glowing ring
+- **Static RGB lighting** — full 16M-colour picker per device, payload sent directly over raw USB
+- **DPI adjustment** — slider control with live hardware update
+- **Connection-type detection** — automatically detects USB cable, wireless dongle, or Bluetooth and labels the device card accordingly
+- **Profile persistence** — lighting colour and DPI are saved to disk and automatically re-applied every time the device reconnects
+
+### 🎧 Headset Control
+- **Battery level** — Kraken V4 Pro battery polled via its proprietary HID interface (Wireshark-verified USB protocol)
+- **Inactive relay recovery** — if the headset hub enters "inactive relay mode" after extended USB idle, a USB device reset is issued automatically to force re-enumeration and resume polling
+
+### 🔔 System Tray
+- **Multi-device entries** — one tray menu item per connected device, updated independently
+- **Lowest-battery icon** — the tray icon always reflects the most critical device
+- **Combined tooltip** — e.g. `"Razer Cobra Pro: 58% | Razer Kraken V4 Pro: 96%"`
+- **Low-battery notifications** — desktop alerts at 20 %, 15 %, 10 %, 5 %, and 1 % per device; re-armed after charging
+
+### 📡 Architecture & IPC
+- **Event-driven D-Bus** — the daemon broadcasts `BatteryChanged` signals; the UI reacts instantly without polling
+- **No kernel module** — raw USB via `rusb` (libusb); no `openrazer` driver required
+- **219+ devices recognised** — automatic identification by USB PID on plug-in
+
+### 🧪 Quality
+- **Strictly TDD** — every layer (protocol types, daemon logic, USB payload math, React components) built test-first
+- **CI pipeline** — `cargo test`, `clippy -D warnings`, `cargo fmt`, and WebDriver E2E tests on every push
+- **42 Rust unit tests** across daemon and protocol crates
 
 ---
 
@@ -237,7 +267,7 @@ Vite serves the React frontend at `http://localhost:5173` and Tauri wraps it in 
 cargo test --workspace
 ```
 
-Expected output: **9 tests pass** across `synaptix-daemon` (7) and `synaptix-protocol` (2).
+Expected output: **42+ tests pass** across `synaptix-daemon` and `synaptix-protocol`.
 
 ### React / TypeScript
 
@@ -350,18 +380,19 @@ Verify membership with `groups`. If `plugdev` is listed, you can run the daemon 
 
 ## Supported Devices
 
-Synaptix supports **209+ Razer peripherals** across mice and keyboards. When a supported device is plugged in, the daemon automatically identifies it via USB PID, exposes it on D-Bus, and the UI displays it with its correct name and capabilities.
+Synaptix supports **219+ Razer peripherals** across mice, keyboards, and headsets. When a supported device is plugged in, the daemon automatically identifies it via USB PID, exposes it on D-Bus, and the UI displays it with its correct name and capabilities.
 
 > **Full lighting and battery control** is currently implemented and hardware-tested for a subset of devices (see table below). For all other supported devices, identification and D-Bus exposure work correctly — extended control features will be enabled as protocol parameters are mapped and contributors test on real hardware.
 
 ### Hardware-Tested
 
-| Device | Wired PID | Wireless PID | Static RGB | Battery Reporting |
-|---|---|---|---|---|
-| Razer Cobra Pro | `0x00AF` | `0x00B0` | ✅ Tested | ✅ Tested |
-| Razer DeathAdder V2 Pro | `0x007C` | `0x007D` | ✅ Implemented | 🔄 Untested |
+| Device | Type | PID(s) | Static RGB | DPI Control | Battery Reporting |
+|---|---|---|---|---|---|
+| Razer Cobra Pro | Mouse | `0x00AF` (wired) · `0x00B0` (wireless) | ✅ Tested | ✅ Tested | ✅ Tested |
+| Razer DeathAdder V2 Pro | Mouse | `0x007C` (wired) · `0x007D` (wireless) | ✅ Implemented | 🔄 Untested | 🔄 Untested |
+| Razer Kraken V4 Pro | Headset | `0x0568` (USB hub) · `0x056C` (audio) | N/A | N/A | ✅ Tested |
 
-**Legend:** ✅ Verified on real hardware &nbsp;|&nbsp; 🔄 Protocol mapped, needs hardware confirmation
+**Legend:** ✅ Verified on real hardware &nbsp;|&nbsp; 🔄 Protocol mapped, needs hardware confirmation &nbsp;|&nbsp; N/A Not applicable
 
 ---
 

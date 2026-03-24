@@ -58,15 +58,37 @@ pub enum SensorCommand {
     SetDpi { x: u16, y: u16 },
 }
 
+/// Audio / haptic configuration commands for headset devices.
+///
+/// These map directly to USB HID payloads sent to the headset endpoint.
+/// Command constants are based on the historical Kraken V3 HyperSense protocol;
+/// **Wireshark verification required** for Kraken V4 Pro (PID 0x0568).
+///
+/// Wire format (serde defaults):
+///   SetSidetone:        `{ "SetSidetone": { "level": 50 } }`
+///   SetHapticIntensity: `{ "SetHapticIntensity": { "level": 75 } }`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioCommand {
+    /// Set sidetone volume — hear your own voice in the headset ear cups.
+    /// Valid range: 0 (silent) – 100 (full volume).
+    SetSidetone { level: u8 },
+    /// Set haptic feedback intensity on HyperSense-equipped headsets.
+    /// Valid range: 0 (disabled) – 100 (maximum intensity).
+    SetHapticIntensity { level: u8 },
+}
+
 /// The battery / charging state reported by `razer.device.power`.
 ///
 /// `Charging(u8)` and `Discharging(u8)` carry the current charge level (0–100).
 /// `Full` is reported when the device is on the charger and fully charged.
+/// `Unknown` is used when the battery level cannot be determined (e.g. the USB
+/// query is unsupported or failed) — the UI should display "?" in this case.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BatteryState {
     Charging(u8),
     Discharging(u8),
     Full,
+    Unknown,
 }
 
 impl RazerProductId {
@@ -94,7 +116,7 @@ impl BatteryState {
     pub fn level(&self) -> Option<u8> {
         match self {
             BatteryState::Charging(lvl) | BatteryState::Discharging(lvl) => Some(*lvl),
-            BatteryState::Full => None,
+            BatteryState::Full | BatteryState::Unknown => None,
         }
     }
 }
@@ -171,5 +193,32 @@ mod tests {
         assert_eq!(charging.level(), Some(42));
         assert_eq!(discharging.level(), Some(80));
         assert_eq!(full.level(), None);
+    }
+
+    #[test]
+    fn test_audio_command_serialization() {
+        let sidetone = AudioCommand::SetSidetone { level: 50 };
+        let haptic = AudioCommand::SetHapticIntensity { level: 75 };
+
+        let json_st = serde_json::to_string(&sidetone).expect("sidetone serialization failed");
+        let json_hp = serde_json::to_string(&haptic).expect("haptic serialization failed");
+
+        let restored_st: AudioCommand =
+            serde_json::from_str(&json_st).expect("sidetone deserialization failed");
+        let restored_hp: AudioCommand =
+            serde_json::from_str(&json_hp).expect("haptic deserialization failed");
+
+        assert_eq!(restored_st, sidetone);
+        assert_eq!(restored_hp, haptic);
+
+        // Verify level round-trips correctly
+        assert!(matches!(
+            restored_st,
+            AudioCommand::SetSidetone { level: 50 }
+        ));
+        assert!(matches!(
+            restored_hp,
+            AudioCommand::SetHapticIntensity { level: 75 }
+        ));
     }
 }

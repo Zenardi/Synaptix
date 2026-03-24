@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { createContext, useEffect, useState } from "react";
+import { Routes, Route } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Titlebar from "./Titlebar";
 import DeviceCard from "./components/DeviceCard";
+import DeviceDetail from "./pages/DeviceDetail";
 
 // Mirror of the Rust BatteryState enum after serde serialisation.
 // Serde serialises unit-like variants as plain strings and tuple variants
@@ -10,7 +12,8 @@ import DeviceCard from "./components/DeviceCard";
 export type BatteryState =
   | { Charging: number }
   | { Discharging: number }
-  | "Full";
+  | "Full"
+  | "Unknown";
 
 // Matches the DeviceEntry struct returned by the Tauri `get_razer_devices` command.
 export type ConnectionType = "Wired" | "Dongle" | "Bluetooth";
@@ -38,19 +41,47 @@ interface ConnectionUpdatePayload {
 
 export function getBatteryLevel(state: BatteryState): number {
   if (state === "Full") return 100;
+  if (state === "Unknown") return 0;
   if (typeof state === "object" && "Charging" in state) return state.Charging;
   if (typeof state === "object" && "Discharging" in state)
     return state.Discharging;
   return 0;
 }
 
-export function isCharging(state: BatteryState, connectionType?: ConnectionType): boolean {
-  // A wired connection is always powered by USB — always charging by definition.
+export function isCharging(
+  state: BatteryState,
+  connectionType?: ConnectionType,
+): boolean {
   if (connectionType === "Wired") return true;
-  // Full means battery is topped up while on charge.
   if (state === "Full") return true;
+  if (state === "Unknown") return false;
   return typeof state === "object" && "Charging" in state;
 }
+
+/** Returns true when a device's capabilities list includes the given name. */
+export function hasCapability(
+  device: RazerDevice,
+  cap: string,
+): boolean {
+  return device.capabilities.some((c) =>
+    typeof c === "string" ? c === cap : cap in c,
+  );
+}
+
+// ── Devices context ──────────────────────────────────────────────────────────
+// Shared across Dashboard and DeviceDetail so we don't re-fetch on navigation.
+
+interface DevicesContextValue {
+  devices: RazerDevice[];
+  error: string | null;
+}
+
+export const DevicesContext = createContext<DevicesContextValue>({
+  devices: [],
+  error: null,
+});
+
+// ── App root ─────────────────────────────────────────────────────────────────
 
 function App() {
   const [devices, setDevices] = useState<RazerDevice[]>([]);
@@ -100,35 +131,46 @@ function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#111111] text-white select-none">
-      <Titlebar />
-      {/* pt-9 offsets the fixed 36px titlebar */}
-      <div className="pt-9 p-8">
-        {/* Header */}
-        <h1 className="text-2xl font-bold mb-1 tracking-widest uppercase text-razer-green">
-          Synaptix
-        </h1>
-        <p className="text-xs text-gray-500 mb-8 tracking-wider uppercase">
-          Device Manager
-        </p>
+    <DevicesContext.Provider value={{ devices, error }}>
+      <div className="min-h-screen bg-[#111111] text-white select-none">
+        <Titlebar />
+        <Routes>
+          {/* ── Dashboard ── */}
+          <Route
+            path="/"
+            element={
+              <div className="pt-9 p-8">
+                <h1 className="text-2xl font-bold mb-1 tracking-widest uppercase text-razer-green">
+                  Synaptix
+                </h1>
+                <p className="text-xs text-gray-500 mb-8 tracking-wider uppercase">
+                  Device Manager
+                </p>
 
-        {error && (
-          <div className="text-red-400 text-sm mb-4 bg-red-900/20 p-3 rounded-md border border-red-900/40">
-            Daemon unavailable: {error}
-          </div>
-        )}
+                {error && (
+                  <div className="text-red-400 text-sm mb-4 bg-red-900/20 p-3 rounded-md border border-red-900/40">
+                    Daemon unavailable: {error}
+                  </div>
+                )}
 
-        {devices.length === 0 && !error && (
-          <p className="text-gray-600 text-sm">No devices connected.</p>
-        )}
+                {devices.length === 0 && !error && (
+                  <p className="text-gray-600 text-sm">No devices connected.</p>
+                )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {devices.map((device) => (
-            <DeviceCard key={device.device_id} device={device} />
-          ))}
-        </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {devices.map((device) => (
+                    <DeviceCard key={device.device_id} device={device} />
+                  ))}
+                </div>
+              </div>
+            }
+          />
+
+          {/* ── Device detail ── */}
+          <Route path="/device/:deviceId" element={<DeviceDetail />} />
+        </Routes>
       </div>
-    </div>
+    </DevicesContext.Provider>
   );
 }
 

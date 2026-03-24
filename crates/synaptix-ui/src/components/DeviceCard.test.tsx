@@ -1,16 +1,23 @@
 /**
  * DeviceCard.test.tsx
  *
- * Integration test for the full battery-update reactivity pipeline:
+ * Integration tests for the full battery-display pipeline:
  *   invoke("get_razer_devices") → initial render → listen("device-battery-updated")
  *   → event callback fired → React state update → DeviceCard shows new level.
  *
  * The App is rendered (rather than DeviceCard in isolation) because that is
  * where the Tauri `listen` subscription lives.
+ *
+ * Coverage:
+ *   - Mouse with known Discharging battery (existing tests)
+ *   - Headset with Unknown battery: renders ?, no %, aria-label correct
+ *   - Unknown → Discharging transition: ? disappears, real % appears
+ *   - Unknown + Bluetooth: no spurious "Charging" badge
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import "@testing-library/jest-dom/vitest";
 import App from "../App";
 import type { RazerDevice, BatteryState } from "../App";
@@ -72,7 +79,7 @@ describe("DeviceCard battery reactivity via Tauri events", () => {
   });
 
   it("renders the initial battery level fetched from the daemon", async () => {
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
 
     await waitFor(() =>
       expect(screen.getByText("75%")).toBeInTheDocument(),
@@ -81,7 +88,7 @@ describe("DeviceCard battery reactivity via Tauri events", () => {
   });
 
   it("updates DeviceCard when device-battery-updated event fires at 15%", async () => {
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
 
     // Wait for the initial device load (invoke resolves → setDevices → render).
     await waitFor(() =>
@@ -109,7 +116,7 @@ describe("DeviceCard battery reactivity via Tauri events", () => {
   });
 
   it("does not update an unrelated device when a foreign device_id is received", async () => {
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText("75%")).toBeInTheDocument());
 
     await act(async () => {
@@ -124,5 +131,89 @@ describe("DeviceCard battery reactivity via Tauri events", () => {
     // da-v2-pro should be unaffected.
     expect(screen.getByText("75%")).toBeInTheDocument();
     expect(screen.queryByText("10%")).not.toBeInTheDocument();
+  });
+});
+
+// ── Headset: Unknown battery state ───────────────────────────────────────────
+
+const HEADSET_UNKNOWN: RazerDevice = {
+  device_id: "kraken-v4-pro-0568",
+  name: "Razer Kraken V4 Pro",
+  product_id: "KrakenV4Pro",
+  battery_state: "Unknown",
+  capabilities: [],
+  connection_type: "Bluetooth",
+};
+
+describe("DeviceCard: Unknown battery state (headset)", () => {
+  let capturedBatteryCallback: BatteryEventCallback | undefined;
+
+  beforeEach(() => {
+    capturedBatteryCallback = undefined;
+
+    vi.mocked(invoke).mockResolvedValue([HEADSET_UNKNOWN]);
+
+    vi.mocked(listen).mockImplementation(
+      (eventName: string, callback: unknown) => {
+        if (eventName === "device-battery-updated") {
+          capturedBatteryCallback = callback as BatteryEventCallback;
+        }
+        return Promise.resolve(() => { /* no-op unlisten */ });
+      },
+    );
+  });
+
+  it("renders ? when battery_state is Unknown", async () => {
+    render(<MemoryRouter><App /></MemoryRouter>);
+
+    await waitFor(() =>
+      expect(screen.getByText("?")).toBeInTheDocument(),
+    );
+
+    // No percentage must be shown alongside the ?
+    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
+
+    // aria-label must signal the unknown state for accessibility
+    expect(
+      screen.getByLabelText("Battery level unknown"),
+    ).toBeInTheDocument();
+  });
+
+  it("replaces ? with 62% when device-battery-updated fires with Discharging:62", async () => {
+    render(<MemoryRouter><App /></MemoryRouter>);
+
+    // Wait for initial Unknown render
+    await waitFor(() =>
+      expect(screen.getByText("?")).toBeInTheDocument(),
+    );
+    expect(capturedBatteryCallback).toBeDefined();
+
+    // Simulate the daemon resolving the battery level via D-Bus → Tauri event
+    await act(async () => {
+      capturedBatteryCallback!({
+        payload: {
+          device_id: "kraken-v4-pro-0568",
+          battery_state: { Discharging: 62 },
+        },
+      });
+    });
+
+    // ? must be gone; real percentage must appear
+    await waitFor(() =>
+      expect(screen.getByText("62%")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("?")).not.toBeInTheDocument();
+  });
+
+  it("does not show a Charging badge when battery is Unknown and connection is Bluetooth", async () => {
+    render(<MemoryRouter><App /></MemoryRouter>);
+
+    await waitFor(() =>
+      expect(screen.getByText("?")).toBeInTheDocument(),
+    );
+
+    // Unknown + Bluetooth must never show a spurious Charging badge
+    expect(screen.queryByText("Charging")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("USB charging active")).not.toBeInTheDocument();
   });
 });

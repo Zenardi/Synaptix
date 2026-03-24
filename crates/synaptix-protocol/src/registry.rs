@@ -18,6 +18,14 @@ pub enum DeviceCapability {
     BatteryReporting,
     /// Device supports DPI (sensor resolution) configuration via USB.
     DpiControl,
+    /// Device supports sidetone volume control (headsets).
+    Sidetone,
+    /// Device has a microphone that supports mute toggle.
+    Microphone,
+    /// Device supports haptic feedback enable/intensity (headsets).
+    HapticFeedback,
+    /// Device supports THX Spatial Audio toggle.
+    ThxSpatialAudio,
 }
 
 /// Static profile for a known Razer device sourced from the USB PID registry.
@@ -31,6 +39,12 @@ pub struct DeviceProfile {
     pub device_type: DeviceType,
     /// Capabilities supported by this device.
     pub capabilities: Vec<DeviceCapability>,
+    /// USB interface number to claim for proprietary HID control transfers.
+    ///
+    /// Most Razer devices expose their control endpoint on interface `0`.
+    /// Composite devices (e.g. the Kraken V4 Pro Hub `0x0568`) route
+    /// proprietary commands through a higher-numbered interface (e.g. `3`).
+    pub control_interface: u8,
 }
 
 /// Looks up a [`DeviceProfile`] by USB product ID (PID).
@@ -978,6 +992,12 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
             false,
         ),
         0x0568 => ("Razer Kraken V4 Pro", DeviceType::Audio, false, false),
+        0x056c => (
+            "Razer Kraken V4 Pro (Main)",
+            DeviceType::Audio,
+            false,
+            false,
+        ),
         0x0F19 => (
             "Razer Kraken Kitty Edition",
             DeviceType::Audio,
@@ -997,12 +1017,32 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
     if has_dpi {
         capabilities.push(DeviceCapability::DpiControl);
     }
+    // Headset capabilities — Sidetone + Microphone for all Kraken audio devices.
+    if matches!(device_type, DeviceType::Audio) {
+        capabilities.push(DeviceCapability::Sidetone);
+        capabilities.push(DeviceCapability::Microphone);
+    }
+    // Kraken V4 Pro (both the headset 0x0568 and its USB receiver/hub 0x0567)
+    // supports haptics and THX Spatial Audio.
+    if matches!(product_id, 0x0567 | 0x0568 | 0x056c) {
+        capabilities.push(DeviceCapability::HapticFeedback);
+        capabilities.push(DeviceCapability::ThxSpatialAudio);
+    }
+
+    // The Kraken V4 Pro Hub (0x0568) and main device (0x056c) use a composite
+    // USB configuration; proprietary HID commands must be routed to Interface 4.
+    let control_interface: u8 = if matches!(product_id, 0x0568 | 0x056c) {
+        4
+    } else {
+        0
+    };
 
     Some(DeviceProfile {
         name: name.to_string(),
         product_id,
         device_type,
         capabilities,
+        control_interface,
     })
 }
 
@@ -1084,5 +1124,32 @@ mod tests {
         let profile = get_device_profile(0x0568).expect("Kraken V4 Pro must be in registry");
         assert_eq!(profile.name, "Razer Kraken V4 Pro");
         assert_eq!(profile.device_type, DeviceType::Audio);
+        // Hub requires interface 3 for proprietary HID commands.
+        // Wireshark confirmed: wIndex = 0x0004 (interface 4) for haptic payloads.
+        assert_eq!(profile.control_interface, 4);
+    }
+
+    #[test]
+    fn test_registry_resolves_kraken_v4_pro_main() {
+        let profile = get_device_profile(0x056c).expect("Kraken V4 Pro (Main) must be in registry");
+        assert_eq!(profile.name, "Razer Kraken V4 Pro (Main)");
+        assert_eq!(profile.device_type, DeviceType::Audio);
+        assert_eq!(profile.control_interface, 4);
+        assert!(
+            profile
+                .capabilities
+                .iter()
+                .any(|c| matches!(c, DeviceCapability::HapticFeedback)),
+            "Kraken V4 Pro (Main) must have HapticFeedback capability"
+        );
+    }
+
+    #[test]
+    fn test_control_interface_defaults_to_zero() {
+        // Mice and keyboards must use interface 0 (the default).
+        let cobra = get_device_profile(0x00B0).expect("Cobra Pro must be in registry");
+        assert_eq!(cobra.control_interface, 0);
+        let bw = get_device_profile(0x024E).expect("BlackWidow V3 must be in registry");
+        assert_eq!(bw.control_interface, 0);
     }
 }

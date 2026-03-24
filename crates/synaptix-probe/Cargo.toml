@@ -1,0 +1,15 @@
+[package]
+name = "synaptix-probe"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Standalone USB probe binary for reverse-engineering Razer device protocols"
+
+[[bin]]
+name = "synaptix-probe"
+path = "src/main.rs"
+
+[dependencies]
+rusb = "0.9"
+clap = { version = "4", features = ["derive"] }

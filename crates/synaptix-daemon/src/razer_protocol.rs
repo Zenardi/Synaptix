@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU8, Ordering};
+
 /// USB Vendor ID for all Razer devices.
 pub const RAZER_VID: u16 = 0x1532;
 
@@ -348,6 +350,218 @@ pub fn build_kraken_v4_static_payload(r: u8, g: u8, b: u8) -> [u8; REPORT_LEN] {
     buf
 }
 
+// ── Headset audio / haptic commands ──────────────────────────────────────────
+//
+// These constants are based on the historical Kraken V3 HyperSense protocol
+// as documented by the community.  They share the same command class (0x04)
+// as the sensor/DPI subsystem.  The specific command IDs (0x04 for sidetone,
+// 0x07 for haptics) are **baseline guesses** and should be verified against
+// Wireshark captures on Kraken V4 Pro hardware before relying on them.
+
+/// Transaction ID for Kraken headsets (V3/V4 generation).
+/// Source: Kraken V3 HyperSense community reverse-engineering.
+pub const TRANSACTION_ID_HEADSET: u8 = 0xFF;
+
+/// Command ID: set sidetone volume.
+/// Source: Kraken V3 community reverse-engineering.
+/// ⚠️  Wireshark verification required for Kraken V4 Pro (PID 0x0568).
+pub const CMD_ID_SET_SIDETONE: u8 = 0x04;
+
+/// Command ID: set haptic feedback intensity (HyperSense).
+/// Source: Kraken V3 HyperSense community reverse-engineering.
+/// ⚠️  Wireshark verification required for Kraken V4 Pro (PID 0x0568).
+pub const CMD_ID_SET_HAPTIC_INTENSITY: u8 = 0x07;
+
+/// Builds a 90-byte Razer HID report that sets the headset sidetone volume.
+///
+/// Sidetone lets the wearer hear their own voice through the ear cups.
+/// Level range: 0 (silent) – 100 (full).
+///
+/// ```text
+/// Byte  1    transaction_id = TRANSACTION_ID_HEADSET (0xFF)
+/// Byte  5    data_size      = 0x01  (1 argument byte)
+/// Byte  6    command_class  = CMD_CLASS_SENSOR (0x04)
+/// Byte  7    command_id     = CMD_ID_SET_SIDETONE (0x04)
+/// Byte  8    args[0]        = level (0-100)
+/// Byte 88    crc            = XOR(bytes[2..88])
+/// ```
+///
+/// ⚠️  Command IDs based on Kraken V3 baseline — verify with Wireshark on V4 Pro.
+pub fn build_set_sidetone_payload(level: u8) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = TRANSACTION_ID_HEADSET;
+    buf[5] = 0x01; // data_size: 1 argument byte
+    buf[6] = CMD_CLASS_SENSOR; // 0x04
+    buf[7] = CMD_ID_SET_SIDETONE; // 0x04
+    buf[8] = level;
+    calculate_razer_checksum(&mut buf);
+    buf
+}
+
+/// Builds a 90-byte Razer HID report that sets the haptic feedback intensity.
+///
+/// Level is placed directly at args[0] (byte 8), range 0–100.
+/// Level 0 disables haptics; any non-zero value sets intensity.
+///
+/// ```text
+/// Byte  1    transaction_id = TRANSACTION_ID_HEADSET (0xFF)
+/// Byte  5    data_size      = 0x01  (1 argument byte)
+/// Byte  6    command_class  = CMD_CLASS_SENSOR (0x04)
+/// Byte  7    command_id     = CMD_ID_SET_HAPTIC_INTENSITY (0x07)
+/// Byte  8    args[0]        = level (0-100)
+/// Byte 88    crc            = XOR(bytes[2..88])
+/// ```
+///
+/// ⚠️  Command IDs based on Kraken V3 HyperSense baseline — verify with Wireshark.
+pub fn build_set_haptic_payload(level: u8) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = TRANSACTION_ID_HEADSET;
+    buf[5] = 0x01; // data_size: 1 argument byte
+    buf[6] = CMD_CLASS_SENSOR; // 0x04
+    buf[7] = CMD_ID_SET_HAPTIC_INTENSITY; // 0x07
+    buf[8] = level;
+    calculate_razer_checksum(&mut buf);
+    buf
+}
+
+// ── Kraken V4 Pro OLED Hub — 64-byte proprietary HID report ──────────────────
+//
+// Wireshark capture on Windows confirmed the Kraken V4 Pro Hub (PID 0x0568)
+// uses a 64-byte report on Interface 4, NOT the legacy 90-byte Razer protocol.
+//
+// Wireshark-verified USB Setup Packet (haptics_synapse.pcapng):
+//   bmRequestType = 0x21 (HOST→DEVICE | CLASS | INTERFACE)
+//   bRequest      = 0x09 (HID SET_REPORT)
+//   wValue        = 0x0202 (Output Report ID 2)
+//   wIndex        = 0x0004 (Interface 4)
+//   wLength       = 64
+
+/// Length of the Kraken V4 Pro Hub proprietary HID report (bytes).
+pub const HAPTIC_REPORT_LEN: usize = 64;
+
+/// HID Report ID for Kraken V4 Pro interrupt-IN and output reports.
+///
+/// Wireshark-confirmed (`battery_synapse.pcapng`): all 78 interrupt-IN packets
+/// on ep=0x84 begin with `0x02`.
+pub const HEADSET_HID_REPORT_ID: u8 = 0x02;
+
+/// Session-global counter incremented on every haptic send.
+/// The headset uses this to sequence multi-packet updates.
+static HAPTIC_COUNTER: AtomicU8 = AtomicU8::new(9);
+
+/// Parses a 64-byte Kraken V4 Pro interrupt-IN packet received on ep=0x84.
+///
+/// **Wireshark ground truth (`battery_synapse.pcapng`, 78 packets, all identical):**
+/// ```text
+/// 02 02 60 00 00 00 00 17 09 00 00 00 ...
+/// ```
+/// - `byte[0]` = `0x02` — HID Report ID (validates the packet)
+/// - `byte[1]` = `0x02` — status/type constant
+/// - **`byte[2]`** = battery percentage **direct, 0–100 decimal** (no scale!)
+///   e.g. `0x60` = 96 = **96%** battery
+///
+/// On Linux, Interface 4 (ep=0x84) is unbound, so [`poll_headset_battery`] first
+/// tries HID GET_REPORT, then falls back to `clear_halt` + `read_interrupt`.
+///
+/// Returns `Some(percent)` when `byte[0] == 0x02` and `byte[2]` is in 1–100.
+/// Returns `None` for all other packets.
+pub fn parse_headset_push_packet(resp: &[u8; HAPTIC_REPORT_LEN]) -> Option<u8> {
+    if resp[0] != HEADSET_HID_REPORT_ID {
+        return None;
+    }
+    let pct = resp[2];
+    if pct == 0 || pct > 100 {
+        return None;
+    }
+    Some(pct)
+}
+
+/// Builds a 64-byte HID output report that sets the Kraken V4 Pro haptic intensity.
+///
+/// **Wireshark-verified layout** captured from Razer Synapse 3 on Windows
+/// (`haptics_synapse.pcapng`, `sidehaptics.pcapng`, `volume_sidetone.pcapng`):
+///
+/// ```text
+/// Byte  0     Report ID      = 0x02  (matches wValue low-byte)
+/// Byte  1     status         = 0x00
+/// Byte  2     transaction_id = 0x60  (fixed)
+/// Bytes 3–5   reserved       = 0x00
+/// Byte  6     cmd_class      = 0x28
+/// Byte  7     cmd_id         = 0x17
+/// Byte  8     = 0x09  (fixed)
+/// Byte  9     = 0x01  (fixed)
+/// Byte 10     haptic_a       — primary intensity (0=off, 78=max observed)
+/// Bytes 11–13 = 0x00
+/// Byte 14     = 0x02  (field marker)
+/// Byte 15     = 0x00
+/// Byte 16     haptic_b       — secondary intensity (0=off, 81=max observed)
+/// Bytes 17–18 = 0x00
+/// Byte 19     = 0x03  (field marker)
+/// Bytes 20–23 = 0x00
+/// Byte 24     = 0x04  (field marker)
+/// Byte 25     = 0x00
+/// Byte 26     = 0x3A  (fixed per-session value; narrow observed range 57–58)
+/// Bytes 27–28 = 0x00
+/// Byte 29     = 0x05  (field marker)
+/// Bytes 30–32 = 0x00
+/// Byte 33     = 0x06  (field marker)
+/// Bytes 34–37 = 0x00
+/// Byte 38     = 0x07  (field marker)
+/// Byte 39     = 0x09  (fixed)
+/// Byte 40     = 0x09  (fixed)
+/// Byte 41     = 0x00  (per-session; observed 0x10–0x20 across captures)
+/// Byte 42     counter        — increments by 1 each send (AtomicU8, wraps 255→0)
+/// Byte 43     = 0x01  (fixed)
+/// Byte 44     = 0x08  (fixed)
+/// Bytes 45–63 = 0x00  (padding; NO checksum)
+/// ```
+///
+/// Level mapping derived from captures (UI values: 0, 33, 66, 100):
+///
+/// | level | byte[10] | byte[16] |
+/// |-------|----------|----------|
+/// |   0   |    0     |    0     |
+/// |  33   |   26     |   62     |
+/// |  66   |   40     |   68     |
+/// |  100  |   78     |   81     |
+pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
+    let mut buf = [0u8; HAPTIC_REPORT_LEN];
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    buf[0] = 0x02; // report_id
+    buf[2] = 0x60; // transaction_id (fixed)
+    buf[6] = 0x28; // cmd_class
+    buf[7] = 0x17; // cmd_id
+
+    // ── Intensity ─────────────────────────────────────────────────────────────
+    let (haptic_a, haptic_b): (u8, u8) = if level == 0 {
+        (0, 0)
+    } else {
+        let a = (u16::from(level) * 78 / 100) as u8;
+        let b = (60u16 + u16::from(level) * 21 / 100) as u8;
+        (a.max(1), b)
+    };
+
+    buf[8] = 0x09;
+    buf[9] = 0x01;
+    buf[10] = haptic_a;
+    buf[14] = 0x02;
+    buf[16] = haptic_b;
+    buf[19] = 0x03;
+    buf[24] = 0x04;
+    buf[26] = 0x3A; // per-session fixed value
+    buf[29] = 0x05;
+    buf[33] = 0x06;
+    buf[38] = 0x07;
+    buf[39] = 0x09;
+    buf[40] = 0x09;
+    buf[42] = HAPTIC_COUNTER.fetch_add(1, Ordering::Relaxed);
+    buf[43] = 0x01;
+    buf[44] = 0x08;
+
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +812,284 @@ mod tests {
         assert_eq!(payload[11], 0x01, "dpi_y high (400)");
         assert_eq!(payload[12], 0x90, "dpi_y low (400)");
         assert_eq!(payload[88], 0xD0, "CRC mismatch for asymmetric DPI");
+    }
+
+    // ── Headset audio / haptic payload tests ─────────────────────────────────
+
+    /// Sidetone at level=50 (0x32).
+    ///
+    /// Non-zero bytes in [2..88]: [5]=0x01, [6]=0x04, [7]=0x04, [8]=0x32
+    /// CRC = 0x01 ^ 0x04 ^ 0x04 ^ 0x32 = 0x33
+    /// (byte[1]=0xFF is the transaction_id and lies outside the XOR range [2..88])
+    #[test]
+    fn test_sidetone_payload_generation() {
+        let payload = build_set_sidetone_payload(50);
+
+        assert_eq!(payload[0], 0x00, "status must be 0x00 (new command)");
+        assert_eq!(
+            payload[1], TRANSACTION_ID_HEADSET,
+            "transaction_id must be 0xFF"
+        );
+        assert_eq!(payload[5], 0x01, "data_size must be 1 for sidetone");
+        assert_eq!(
+            payload[6], CMD_CLASS_SENSOR,
+            "command_class must be 0x04 (audio)"
+        );
+        assert_eq!(
+            payload[7], CMD_ID_SET_SIDETONE,
+            "command_id must be 0x04 (sidetone)"
+        );
+        assert_eq!(payload[8], 50, "level byte must be at args[0] (byte 8)");
+        assert_eq!(payload[89], 0x00, "reserved byte must be 0x00");
+
+        // Verify checksum is self-consistent.
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(recomputed, payload[88], "XOR checksum mismatch");
+        assert_eq!(payload[88], 0x33, "CRC mismatch for sidetone level=50");
+    }
+
+    /// Sidetone at level=0 should still form a valid payload (silence).
+    #[test]
+    fn test_sidetone_payload_zero_level() {
+        let payload = build_set_sidetone_payload(0);
+        assert_eq!(payload[8], 0x00, "level byte must be 0");
+        // CRC = 0x01 ^ 0x04 ^ 0x04 = 0x01
+        assert_eq!(payload[88], 0x01, "CRC mismatch for sidetone level=0");
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(recomputed, payload[88]);
+    }
+
+    /// Haptic intensity at level=75 (0x4B).
+    ///
+    /// Non-zero bytes in [2..88]: [5]=0x01, [6]=0x04, [7]=0x07, [8]=0x4B
+    /// CRC = 0x01 ^ 0x04 ^ 0x07 ^ 0x4B = 0x49
+    #[test]
+    fn test_haptic_payload_generation() {
+        let payload = build_set_haptic_payload(75);
+
+        assert_eq!(payload[0], 0x00, "status must be 0x00 (new command)");
+        assert_eq!(
+            payload[1], TRANSACTION_ID_HEADSET,
+            "transaction_id must be 0xFF"
+        );
+        assert_eq!(payload[5], 0x01, "data_size must be 1 for haptics");
+        assert_eq!(
+            payload[6], CMD_CLASS_SENSOR,
+            "command_class must be 0x04 (audio)"
+        );
+        assert_eq!(
+            payload[7], CMD_ID_SET_HAPTIC_INTENSITY,
+            "command_id must be 0x07 (haptics)"
+        );
+        assert_eq!(payload[8], 75, "level byte must be at args[0] (byte 8)");
+        assert_eq!(payload[9], 0x00, "byte 9 must be unused (0x00)");
+        assert_eq!(payload[89], 0x00, "reserved byte must be 0x00");
+
+        // CRC = 0x01 ^ 0x04 ^ 0x07 ^ 0x4B = 0x49
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(recomputed, payload[88], "XOR checksum mismatch");
+        assert_eq!(payload[88], 0x49, "CRC mismatch for haptic level=75");
+    }
+
+    /// Haptic at level=0 — disables haptics.
+    #[test]
+    fn test_haptic_payload_zero_level() {
+        let payload = build_set_haptic_payload(0);
+        assert_eq!(payload[8], 0x00, "level must be 0x00");
+        // CRC = 0x01 ^ 0x04 ^ 0x07 = 0x02
+        assert_eq!(payload[88], 0x02, "CRC mismatch for haptic level=0");
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(recomputed, payload[88]);
+    }
+
+    /// Canonical V3-legacy verification test (spec name): sidetone level=50.
+    /// Asserts the exact bytes 6, 7, 8 and a valid XOR checksum.
+    #[test]
+    fn test_sidetone_payload_v3_legacy() {
+        let payload = build_set_sidetone_payload(50);
+        assert_eq!(payload[6], 0x04, "command_class must be 0x04");
+        assert_eq!(payload[7], 0x04, "command_id must be 0x04 (sidetone)");
+        assert_eq!(payload[8], 50, "level must be at index 8");
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(
+            recomputed, payload[88],
+            "XOR checksum is not mathematically valid"
+        );
+    }
+
+    /// Canonical V3-legacy verification test (spec name): haptic level=50.
+    /// Asserts the exact bytes 6, 7, 8 and a valid XOR checksum.
+    #[test]
+    fn test_haptic_payload_v3_legacy() {
+        let payload = build_set_haptic_payload(50);
+        assert_eq!(payload[6], 0x04, "command_class must be 0x04");
+        assert_eq!(payload[7], 0x07, "command_id must be 0x07 (haptics)");
+        assert_eq!(payload[8], 50, "level must be at index 8");
+        let recomputed: u8 = payload[2..88].iter().fold(0u8, |acc, &b| acc ^ b);
+        assert_eq!(
+            recomputed, payload[88],
+            "XOR checksum is not mathematically valid"
+        );
+    }
+
+    // ── Kraken V4 Pro OLED Hub — 64-byte haptic report ───────────────────────
+
+    /// Verify Wireshark-verified fixed bytes and intensity mapping for level=66.
+    #[test]
+    fn test_haptic_report_v4_pro_layout() {
+        let report = build_haptic_report(66);
+
+        assert_eq!(report.len(), 64, "report must be exactly 64 bytes");
+        assert_eq!(report[0], 0x02, "Report ID must be 0x02");
+        assert_eq!(report[2], 0x60, "transaction_id must be 0x60");
+        assert_eq!(report[6], 0x28, "cmd_class must be 0x28");
+        assert_eq!(report[7], 0x17, "cmd_id must be 0x17");
+        assert_eq!(report[8], 0x09, "fixed byte[8] must be 0x09");
+        assert_eq!(report[9], 0x01, "fixed byte[9] must be 0x01");
+        assert_eq!(report[14], 0x02, "field marker byte[14] must be 0x02");
+        assert_eq!(report[19], 0x03, "field marker byte[19] must be 0x03");
+        assert_eq!(report[24], 0x04, "field marker byte[24] must be 0x04");
+        assert_eq!(report[29], 0x05, "field marker byte[29] must be 0x05");
+        assert_eq!(report[33], 0x06, "field marker byte[33] must be 0x06");
+        assert_eq!(report[38], 0x07, "field marker byte[38] must be 0x07");
+        assert_eq!(report[39], 0x09, "fixed byte[39] must be 0x09");
+        assert_eq!(report[40], 0x09, "fixed byte[40] must be 0x09");
+        assert_eq!(report[43], 0x01, "fixed byte[43] must be 0x01");
+        assert_eq!(report[44], 0x08, "fixed byte[44] must be 0x08");
+
+        // Level 66 → haptic_a = 66*78/100 = 51, haptic_b = 60 + 66*21/100 = 73
+        assert_eq!(report[10], 51, "haptic_a for level=66");
+        assert_eq!(report[16], 73, "haptic_b for level=66");
+
+        // No checksum — trailing bytes must all be zero
+        assert_eq!(report[62], 0x00, "no checksum: byte[62] must be 0x00");
+        assert_eq!(report[63], 0x00, "padding: byte[63] must be 0x00");
+    }
+
+    /// Intensity 0 must zero out haptic_a and haptic_b.
+    #[test]
+    fn test_haptic_report_v4_pro_disable() {
+        let report = build_haptic_report(0);
+        assert_eq!(report[10], 0x00, "haptic_a must be 0x00 when disabled");
+        assert_eq!(report[16], 0x00, "haptic_b must be 0x00 when disabled");
+        // All padding bytes should remain zero
+        assert_eq!(report[62], 0x00, "no checksum: byte[62] must be 0x00");
+    }
+
+    /// Level 100 produces the maximum observed byte values.
+    #[test]
+    fn test_haptic_report_v4_pro_max_intensity() {
+        let report = build_haptic_report(100);
+        // haptic_a = 100*78/100 = 78, haptic_b = 60 + 100*21/100 = 81
+        assert_eq!(report[10], 78, "haptic_a at max level");
+        assert_eq!(report[16], 81, "haptic_b at max level");
+    }
+
+    // ── Kraken V4 Pro headset HID battery packet tests ────────────────────────
+    //
+    // Wireshark ground truth: `battery_synapse.pcapng` captured on Windows with
+    // Razer Synapse. 78 interrupt-IN packets on ep=0x84, ALL identical:
+    //   02 02 60 00 00 00 00 17 09 00 00 00 ...
+    // byte[0]=0x02 (HID Report ID), byte[1]=0x02, byte[2]=0x60=96 (battery 96%)
+
+    /// Real Wireshark packet: `02 02 60 00 00 00 00 17 09 00 ...`
+    /// byte[2] = 0x60 = 96 → battery 96 %
+    #[test]
+    fn test_parse_headset_hid_packet_real_wireshark_data() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02; // HID Report ID
+        resp[1] = 0x02; // status constant
+        resp[2] = 0x60; // battery = 96 (0x60 decimal = 96)
+        resp[7] = 0x17;
+        resp[8] = 0x09;
+
+        let pct = parse_headset_push_packet(&resp);
+        assert_eq!(
+            pct,
+            Some(96),
+            "0x60=96 in byte[2] must decode as 96% (direct percent, no scale)"
+        );
+    }
+
+    /// Battery at 100% (0x64): must return Some(100).
+    #[test]
+    fn test_parse_headset_hid_packet_full_battery() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02;
+        resp[2] = 100;
+        assert_eq!(parse_headset_push_packet(&resp), Some(100));
+    }
+
+    /// Battery at 1% (minimum valid): must return Some(1).
+    #[test]
+    fn test_parse_headset_hid_packet_one_percent() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02;
+        resp[2] = 1;
+        assert_eq!(parse_headset_push_packet(&resp), Some(1));
+    }
+
+    /// byte[2]=0x00 (no data / device not ready) must return None.
+    #[test]
+    fn test_parse_headset_hid_packet_zero_rejected() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02;
+        resp[2] = 0x00;
+        assert_eq!(
+            parse_headset_push_packet(&resp),
+            None,
+            "byte[2]=0 must be rejected"
+        );
+    }
+
+    /// byte[2]=101 (out of range) must return None.
+    #[test]
+    fn test_parse_headset_hid_packet_over_100_rejected() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02;
+        resp[2] = 101;
+        assert_eq!(
+            parse_headset_push_packet(&resp),
+            None,
+            "byte[2]>100 must be rejected as out-of-range"
+        );
+    }
+
+    /// byte[2]=0xFF (sentinel / garbage) must return None.
+    #[test]
+    fn test_parse_headset_hid_packet_ff_rejected() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02;
+        resp[2] = 0xFF;
+        assert_eq!(
+            parse_headset_push_packet(&resp),
+            None,
+            "byte[2]=0xFF must be rejected"
+        );
+    }
+
+    /// Packet with wrong Report ID (byte[0] != 0x02) must return None.
+    /// e.g. all-zero packet, or other HID report types.
+    #[test]
+    fn test_parse_headset_hid_packet_wrong_report_id_rejected() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x01; // wrong Report ID
+        resp[2] = 96; // would be valid battery if ID were correct
+        assert_eq!(
+            parse_headset_push_packet(&resp),
+            None,
+            "byte[0] != 0x02 must be rejected"
+        );
+    }
+
+    /// All-zero packet (uninitialised buffer) must return None.
+    #[test]
+    fn test_parse_headset_hid_packet_all_zeros_rejected() {
+        let resp = [0u8; HAPTIC_REPORT_LEN];
+        assert_eq!(
+            parse_headset_push_packet(&resp),
+            None,
+            "all-zero packet must be rejected"
+        );
     }
 }

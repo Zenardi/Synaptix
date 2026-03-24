@@ -49,6 +49,7 @@ fn state_pct(state: &BatteryState) -> u8 {
     match state {
         BatteryState::Charging(n) | BatteryState::Discharging(n) => *n,
         BatteryState::Full => 100,
+        BatteryState::Unknown => 0,
     }
 }
 
@@ -57,6 +58,7 @@ fn battery_to_pct(state: &BatteryState) -> (u8, bool) {
         BatteryState::Charging(pct) => (*pct, true),
         BatteryState::Discharging(pct) => (*pct, false),
         BatteryState::Full => (100, true),
+        BatteryState::Unknown => (0, false),
     }
 }
 
@@ -135,6 +137,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     // Push the initial reading to the tray immediately.
     let (pct, charging) = battery_to_pct(&initial_battery);
     tx.send(TrayUpdate {
+        device_id: "cobra-pro".to_string(),
         device_name: cobra_name.clone(),
         percentage: pct,
         is_charging: charging,
@@ -155,6 +158,46 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             connection_type: initial_conn,
         },
     );
+
+    // Probe for known headsets on the USB bus.
+    // 0x0568 = Kraken V4 Pro OLED Hub (always present when the headset is plugged in).
+    const HEADSET_PIDS: &[(u16, RazerProductId)] = &[(0x0568, RazerProductId::KrakenV4Pro)];
+    let detected_headsets: Vec<(u16, RazerProductId)> = tokio::task::spawn_blocking(|| {
+        HEADSET_PIDS
+            .iter()
+            .filter(|(pid, _)| usb_backend::detect_connected_pid(&[*pid]).is_some())
+            .map(|(pid, prod)| (*pid, prod.clone()))
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+
+    for (pid, product_id) in &detected_headsets {
+        let pid = *pid;
+        let Some(profile) = get_device_profile(pid) else {
+            continue;
+        };
+        let device_id = format!("kraken-v4-pro-{pid:04x}");
+        log::info!("[Detect] {} on USB: PID={pid:#06x}", profile.name);
+
+        // Register the headset with Unknown battery state immediately so D-Bus
+        // registration is not delayed. The polling loop resolves the real
+        // battery level within the first 3–8 seconds and emits a signal.
+        let headset_battery = BatteryState::Unknown;
+
+        log::info!("[HeadsetBatt] Initial state: {headset_battery:?}");
+
+        manager.add_device(
+            device_id,
+            RazerDevice {
+                name: profile.name,
+                product_id: product_id.clone(),
+                battery_state: headset_battery,
+                capabilities: profile.capabilities,
+                connection_type: ConnectionType::Wired,
+            },
+        );
+    }
 
     // Auto-apply any persisted settings (lighting, DPI) to hardware at startup.
     tokio::task::block_in_place(|| manager.apply_saved_settings());
@@ -177,6 +220,86 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     };
 
     log::info!("Synaptix Daemon running on org.synaptix.Daemon at /org/synaptix/Daemon");
+
+    // ── Headset battery polling loop ─────────────────────────────────────────
+    // Reads interrupt-IN packets from ep=0x84 (device pushes every ~1s).
+    // Battery = resp[2] direct 0-100%. Starts after a 3-second delay to allow
+    // the D-Bus interface to settle, then polls every 5 s.
+    if !detected_headsets.is_empty() {
+        let headset_conn = conn.clone();
+        let headset_tx = tx.clone();
+        let headset_pids: Vec<(u16, String, String)> = detected_headsets
+            .iter()
+            .map(|(pid, prod_id)| {
+                let device_id = format!("kraken-v4-pro-{pid:04x}");
+                let display_name = get_device_profile(*pid)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| format!("{prod_id:?}"));
+                (*pid, device_id, display_name)
+            })
+            .collect();
+
+        tokio::spawn(async move {
+            // Give the D-Bus interface a moment to be fully registered before
+            // the first poll, then poll every 5 s (matches device push cadence).
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+            loop {
+                for (pid, device_id, display_name) in &headset_pids {
+                    let pid = *pid;
+                    let device_id = device_id.clone();
+                    let display_name = display_name.clone();
+
+                    let pct_opt =
+                        tokio::task::spawn_blocking(move || usb_backend::poll_headset_battery(pid))
+                            .await
+                            .ok()
+                            .flatten();
+
+                    let Some(pct) = pct_opt else { continue };
+                    let new_state = BatteryState::Discharging(pct);
+
+                    let Ok(iface_ref) = headset_conn
+                        .object_server()
+                        .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                        .await
+                    else {
+                        continue;
+                    };
+
+                    let state_json = serde_json::to_string(&new_state)
+                        .unwrap_or_else(|_| "\"Discharging\"".to_string());
+
+                    {
+                        let mut iface = iface_ref.get_mut().await;
+                        iface.update_battery(&device_id, new_state.clone());
+                    }
+
+                    DeviceManager::battery_changed(
+                        iface_ref.signal_emitter(),
+                        &device_id,
+                        &state_json,
+                    )
+                    .await
+                    .ok();
+
+                    // Push to system tray so headset battery shows alongside the mouse.
+                    headset_tx
+                        .send(TrayUpdate {
+                            device_id: device_id.clone(),
+                            device_name: display_name,
+                            percentage: pct,
+                            is_charging: false,
+                        })
+                        .ok();
+
+                    log::info!("[HeadsetBatt] Poll: {device_id} → {new_state:?}");
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+        });
+    }
 
     // ── Connection-watch task (every 1 s) ────────────────────────────────────
     // Cheap USB descriptor scan — no device open, no I/O. Fires a D-Bus signal
@@ -366,6 +489,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                                 let pct = match &d.battery_state {
                                     BatteryState::Charging(n) | BatteryState::Discharging(n) => *n,
                                     BatteryState::Full => 100,
+                                    BatteryState::Unknown => 0,
                                 };
                                 // Only emit if we have a meaningful level.
                                 if pct > 0 {
@@ -498,6 +622,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         // Always push to tray so the icon stays current.
         let (pct, charging) = battery_to_pct(&new_state);
         tx.send(TrayUpdate {
+            device_id: "cobra-pro".to_string(),
             device_name: current_name,
             percentage: pct,
             is_charging: charging,

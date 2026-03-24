@@ -53,7 +53,9 @@ jobs:
             librsvg2-dev \
             libdbus-1-dev \
             libudev-dev \
-            libgtk-3-dev
+            libgtk-3-dev \
+            webkit2gtk-driver \
+            xvfb
 
       # ── Node.js ──────────────────────────────────────────────────────────────
       - name: Set up Node.js 22
@@ -95,6 +97,19 @@ jobs:
         working-directory: crates/synaptix-ui
         run: npm test
 
+      # ── Cache tauri-driver binary ────────────────────────────────────────────
+      - name: Cache tauri-driver binary
+        uses: actions/cache@v4
+        id: cache-tauri-driver
+        with:
+          path: ~/.cargo/bin/tauri-driver
+          key: tauri-driver-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # ── Install tauri-driver (skip if cached) ────────────────────────────────
+      - name: Install tauri-driver
+        if: steps.cache-tauri-driver.outputs.cache-hit != 'true'
+        run: cargo install tauri-driver --locked
+
       # ── Daemon release binary (required by the .deb bundler) ─────────────────
       - name: Build daemon (release)
         run: cargo build --release -p synaptix-daemon
@@ -105,6 +120,14 @@ jobs:
       - name: Build UI and package .deb
         working-directory: crates/synaptix-ui
         run: npm run tauri build
+
+      # ── E2E tests (WebDriver / tauri-driver) ────────────────────────────────
+      # Runs after tauri build so the binary exists at target/release/synaptix-ui.
+      # xvfb-run provides a headless display; daemon-dependent tests auto-skip
+      # (no Razer hardware in CI).
+      - name: Run E2E tests
+        working-directory: crates/synaptix-ui
+        run: xvfb-run --auto-servernum npm run test:e2e
 
       # ── Store .deb for the release job (and as a downloadable artifact) ──────
       - name: Upload .deb artifact
