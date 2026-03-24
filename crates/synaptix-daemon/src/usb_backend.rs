@@ -1,7 +1,7 @@
 use crate::razer_protocol::{
-    build_battery_query_payload, build_charging_query_payload, parse_headset_push_packet,
-    validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS,
-    HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
+    build_battery_query_payload, build_charging_query_payload, build_headset_wake_query,
+    parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL,
+    CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
@@ -375,9 +375,14 @@ fn query_charging_status(
 
 /// Reads the Kraken V4 Pro headset battery level from the interrupt-IN endpoint.
 ///
-/// **Wireshark ground truth (`battery_synapse.pcapng`):**
-/// The device pushes 64-byte HID reports automatically on ep=0x84 every ~1 second.
-/// No trigger or wake query is needed. Battery = `resp[2]` (direct 0–100%).
+/// **Protocol (Wireshark-verified):**
+/// - Send a 90-byte "firmware version" read request to Interface 2 (`wIndex=0x0002`).
+///   This triggers the device firmware to start pushing 64-byte HID status packets.
+/// - Battery = `resp[2]` direct 0–100% (e.g. `0x60` = 96%).
+///
+/// Without the Interface 2 trigger, `read_interrupt(0x84)` will time out even
+/// though the device pushes automatically when Synapse is running (Synapse
+/// initialises the device before the first push is observed in a Wireshark capture).
 pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
     const MAX_ATTEMPTS: usize = 4;
 
@@ -387,8 +392,14 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
 
     let timeout = std::time::Duration::from_secs(3);
 
-    // The device pushes HID status packets on ep=0x84 automatically every ~1s.
-    // Just arm the interrupt pipe and read until we get a valid packet.
+    // Send the wake query to Interface 2. This causes the device firmware to
+    // start pushing HID status packets on ep=0x84. Non-fatal if it fails.
+    let wake_query = build_headset_wake_query();
+    match handle.write_control(0x21, 0x09, 0x0300, 0x0002, &wake_query, timeout) {
+        Ok(_) => log::debug!("[HeadsetBatt] Sent wake query to Interface 2"),
+        Err(e) => log::debug!("[HeadsetBatt] Wake query failed (non-fatal): {e:?}"),
+    }
+
     for attempt in 1..=MAX_ATTEMPTS {
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
         match handle.read_interrupt(0x84, &mut resp, timeout) {
