@@ -991,13 +991,8 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
             false,
             false,
         ),
-        0x0568 => ("Razer Kraken V4 Pro", DeviceType::Audio, false, false),
-        0x056c => (
-            "Razer Kraken V4 Pro (Main)",
-            DeviceType::Audio,
-            false,
-            false,
-        ),
+        0x0568 => ("Razer Kraken V4 Pro", DeviceType::Audio, true, false),
+        0x056c => ("Razer Kraken V4 Pro (Main)", DeviceType::Audio, true, false),
         0x0F19 => (
             "Razer Kraken Kitty Edition",
             DeviceType::Audio,
@@ -1127,6 +1122,23 @@ mod tests {
         // Hub requires interface 3 for proprietary HID commands.
         // Wireshark confirmed: wIndex = 0x0004 (interface 4) for haptic payloads.
         assert_eq!(profile.control_interface, 4);
+        assert!(
+            profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Kraken V4 Pro is a wireless headset and must advertise BatteryReporting"
+        );
+    }
+
+    #[test]
+    fn test_registry_resolves_kraken_v4_pro_main_has_battery() {
+        let profile = get_device_profile(0x056c).expect("Kraken V4 Pro (Main) must be in registry");
+        assert!(
+            profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Kraken V4 Pro (Main) is the wireless headset itself and must advertise BatteryReporting"
+        );
     }
 
     #[test]
