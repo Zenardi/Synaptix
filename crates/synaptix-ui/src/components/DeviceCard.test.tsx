@@ -50,7 +50,7 @@ const INITIAL_DEVICE: RazerDevice = {
   name: "Razer DeathAdder V2 Pro",
   product_id: "DeathAdderV2Pro",
   battery_state: { Discharging: 75 },
-  capabilities: [],
+  capabilities: ["BatteryReporting"],
   connection_type: "Wired",
 };
 
@@ -141,7 +141,7 @@ const HEADSET_UNKNOWN: RazerDevice = {
   name: "Razer Kraken V4 Pro",
   product_id: "KrakenV4Pro",
   battery_state: "Unknown",
-  capabilities: [],
+  capabilities: ["BatteryReporting"],
   connection_type: "Bluetooth",
 };
 
@@ -215,5 +215,42 @@ describe("DeviceCard: Unknown battery state (headset)", () => {
     // Unknown + Bluetooth must never show a spurious Charging badge
     expect(screen.queryByText("Charging")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("USB charging active")).not.toBeInTheDocument();
+  });
+});
+
+// ── Wired keyboard: no battery ───────────────────────────────────────────────
+// A device without the BatteryReporting capability must NOT render the
+// battery ring at all — not even a "?" placeholder.
+
+const WIRED_KEYBOARD: RazerDevice = {
+  device_id: "blackwidow-v3-mini",
+  name: "Razer BlackWidow V3 Mini HyperSpeed (Wired)",
+  product_id: "BlackWidowV3MiniHyperSpeedWired",
+  battery_state: "Unknown",
+  capabilities: [{ Lighting: "Off" }],  // no BatteryReporting
+  connection_type: "Wired",
+};
+
+describe("DeviceCard: no battery ring for wired keyboard (no BatteryReporting)", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockResolvedValue([WIRED_KEYBOARD]);
+    vi.mocked(listen).mockImplementation(() =>
+      Promise.resolve(() => { /* no-op unlisten */ }),
+    );
+  });
+
+  it("does not render a battery ring or ? for a device without BatteryReporting", async () => {
+    render(<MemoryRouter><App /></MemoryRouter>);
+
+    await waitFor(() =>
+      expect(screen.getByText("Razer BlackWidow V3 Mini HyperSpeed (Wired)")).toBeInTheDocument(),
+    );
+
+    // No "?" and no percentage — the ring should be completely absent
+    expect(screen.queryByText("?")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
+
+    // No battery aria-label should be present
+    expect(screen.queryByLabelText(/battery/i)).not.toBeInTheDocument();
   });
 });

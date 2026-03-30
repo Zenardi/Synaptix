@@ -7,11 +7,22 @@ use synaptix_protocol::{
 /// Returns the (transaction_id, led_id) pair for a device's static lighting command.
 /// Derived from `razer_attr_write_matrix_effect_static_common` in razermouse_driver.c.
 fn lighting_params(product_id: &RazerProductId) -> (u8, u8) {
-    use crate::razer_protocol::{LED_BACKLIGHT, LED_ZERO, TRANSACTION_ID_COBRA, TRANSACTION_ID_DA};
+    use crate::razer_protocol::{
+        LED_BACKLIGHT, LED_ZERO, TRANSACTION_ID_COBRA, TRANSACTION_ID_DA,
+        TRANSACTION_ID_KEYBOARD_WIRELESS,
+    };
     match product_id {
         // Cobra Pro / Basilisk V3 Pro group: transaction_id=0x1F, ZERO_LED
         RazerProductId::CobraProWired | RazerProductId::CobraProWireless => {
             (TRANSACTION_ID_COBRA, LED_ZERO)
+        }
+        // BlackWidow V3 Mini HyperSpeed Wired: transaction_id=0x1F, BACKLIGHT_LED
+        // Ref: razerkbd_driver.c ~line 2107
+        RazerProductId::BlackWidowV3MiniHyperSpeedWired => (TRANSACTION_ID_COBRA, LED_BACKLIGHT),
+        // BlackWidow V3 Mini HyperSpeed Wireless: transaction_id=0x9F, BACKLIGHT_LED
+        // Ref: razerkbd_driver.c ~line 2123
+        RazerProductId::BlackWidowV3MiniHyperSpeedWireless => {
+            (TRANSACTION_ID_KEYBOARD_WIRELESS, LED_BACKLIGHT)
         }
         // DeathAdder V2 Pro group: transaction_id=0x3F, BACKLIGHT_LED
         RazerProductId::DeathAdderV2Pro => (TRANSACTION_ID_DA, LED_BACKLIGHT),
@@ -534,5 +545,43 @@ mod tests {
         let received_state: BatteryState =
             serde_json::from_str(args.new_state_json()).expect("failed to parse BatteryState");
         assert_eq!(received_state, BatteryState::Charging(85));
+    }
+
+    // ── lighting_params routing tests ─────────────────────────────────────────
+
+    /// Wired keyboard must use TRANSACTION_ID_COBRA (0x1F) and LED_BACKLIGHT (0x05).
+    /// Derived from razerkbd_driver.c lines ~2107:
+    ///   request.transaction_id.id = 0x1F  (wired path)
+    ///   razer_chroma_extended_matrix_effect_static(VARSTORE, BACKLIGHT_LED, ...)
+    #[test]
+    fn test_lighting_params_blackwidow_wired_uses_cobra_txn_backlight_led() {
+        use crate::razer_protocol::{LED_BACKLIGHT, TRANSACTION_ID_COBRA};
+        let (txn_id, led_id) = lighting_params(&RazerProductId::BlackWidowV3MiniHyperSpeedWired);
+        assert_eq!(
+            txn_id, TRANSACTION_ID_COBRA,
+            "Wired keyboard must use TRANSACTION_ID_COBRA (0x1F)"
+        );
+        assert_eq!(
+            led_id, LED_BACKLIGHT,
+            "Wired keyboard must target LED_BACKLIGHT (0x05)"
+        );
+    }
+
+    /// Wireless keyboard must use TRANSACTION_ID_KEYBOARD_WIRELESS (0x9F) and LED_BACKLIGHT (0x05).
+    /// Derived from razerkbd_driver.c lines ~2123:
+    ///   request.transaction_id.id = 0x9F  (wireless path)
+    ///   razer_chroma_extended_matrix_effect_static(VARSTORE, BACKLIGHT_LED, ...)
+    #[test]
+    fn test_lighting_params_blackwidow_wireless_uses_wireless_txn_backlight_led() {
+        use crate::razer_protocol::{LED_BACKLIGHT, TRANSACTION_ID_KEYBOARD_WIRELESS};
+        let (txn_id, led_id) = lighting_params(&RazerProductId::BlackWidowV3MiniHyperSpeedWireless);
+        assert_eq!(
+            txn_id, TRANSACTION_ID_KEYBOARD_WIRELESS,
+            "Wireless keyboard must use TRANSACTION_ID_KEYBOARD_WIRELESS (0x9F)"
+        );
+        assert_eq!(
+            led_id, LED_BACKLIGHT,
+            "Wireless keyboard must target LED_BACKLIGHT (0x05)"
+        );
     }
 }
