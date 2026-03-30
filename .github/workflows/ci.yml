@@ -40,7 +40,7 @@ jobs:
 
       # ── Security scan: Rust dependencies ─────────────────────────────────────
       - name: Trivy scan — Rust (Cargo.lock)
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.33.1
         with:
           scan-type: fs
           scan-ref: Cargo.lock
@@ -60,7 +60,7 @@ jobs:
 
       # ── Security scan: Node.js dependencies ──────────────────────────────────
       - name: Trivy scan — Node.js (synaptix-ui)
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.33.1
         with:
           scan-type: fs
           scan-ref: crates/synaptix-ui
