@@ -1,7 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import type { RazerDevice, ConnectionType } from "../App";
-import { getBatteryLevel, isCharging } from "../App";
+import { getBatteryLevel, isCharging, hasCapability } from "../App";
 
 const RADIUS = 45;
 const STROKE_WIDTH = 7;
@@ -19,6 +19,7 @@ interface Props {
 
 export default function DeviceCard({ device }: Props) {
   const navigate = useNavigate();
+  const hasBattery = hasCapability(device, "BatteryReporting");
   const isUnknown = device.battery_state === "Unknown";
   const level = getBatteryLevel(device.battery_state);
   const charging = isCharging(device.battery_state, device.connection_type);
@@ -27,7 +28,8 @@ export default function DeviceCard({ device }: Props) {
   return (
     <div className="bg-[#181818] rounded-xl p-6 border border-white/5 flex flex-col items-center gap-5">
 
-      {/* ── Battery ring ────────────────────────────────────────────── */}
+      {/* ── Battery ring (only for devices with a battery) ──────────────── */}
+      {hasBattery && (
       <div className="relative flex items-center justify-center">
         <svg
           className="-rotate-90"
@@ -79,6 +81,7 @@ export default function DeviceCard({ device }: Props) {
           )}
         </div>
       </div>
+      )}
 
       {/* ── Device name ──────────────────────────────────────────────── */}
       <p className="text-sm text-gray-300 font-medium text-center leading-snug">

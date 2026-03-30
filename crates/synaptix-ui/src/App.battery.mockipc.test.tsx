@@ -36,7 +36,7 @@ const HEADSET_UNKNOWN: RazerDevice = {
   name: "Razer Kraken V4 Pro",
   product_id: "KrakenV4Pro",
   battery_state: "Unknown",
-  capabilities: [],
+  capabilities: ["BatteryReporting"],
   connection_type: "Bluetooth",
 };
 
@@ -45,7 +45,7 @@ const MOUSE_DISCHARGING: RazerDevice = {
   name: "Razer DeathAdder V2 Pro",
   product_id: "DeathAdderV2Pro",
   battery_state: { Discharging: 75 },
-  capabilities: [],
+  capabilities: ["BatteryReporting"],
   connection_type: "Wired",
 };
 

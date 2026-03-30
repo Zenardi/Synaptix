@@ -29,6 +29,10 @@ pub const TRANSACTION_ID_DA: u8 = 0x3F;
 /// Transaction ID for Cobra Pro, Basilisk V3 Pro, and newer wireless mice.
 pub const TRANSACTION_ID_COBRA: u8 = 0x1F;
 
+/// Transaction ID for wireless keyboards (BlackWidow V3 Mini HyperSpeed Wireless, etc.).
+/// Source: `razerkbd_driver.c` — charge_level switch for `_WIRELESS` PIDs.
+pub const TRANSACTION_ID_KEYBOARD_WIRELESS: u8 = 0x9F;
+
 // ── Per-device LED zone IDs ───────────────────────────────────────────────────
 
 /// Zero / catch-all LED zone (used by Cobra Pro and many newer mice).
@@ -184,9 +188,14 @@ pub const STATUS_NOT_SUPPORTED: u8 = 0x05;
 /// Validates a GET_REPORT response against the originating request bytes.
 ///
 /// Mirrors the checks in `razer_send_payload` (razermouse_driver.c):
-/// - `response[0]` must be `STATUS_SUCCESSFUL` (0x02).  If `STATUS_BUSY`
-///   (0x01), returns `Err(false)` to signal "retry".  Any other status is a
-///   hard failure — returns `Err(true)`.
+/// - `response[0]` must be `STATUS_SUCCESSFUL` (0x02).
+/// - `STATUS_BUSY` (0x01): soft retry — returns `Err(false)`.
+/// - `STATUS_TIMEOUT` (0x04): the dongle relayed the command to the device
+///   wirelessly but the device (keyboard/headset) did not respond in time —
+///   this typically means the device is in sleep mode.  Treated as a soft
+///   retry (`Err(false)`) so the caller can wait and try again once the
+///   device wakes up.
+/// - Any other non-successful status: hard failure — returns `Err(true)`.
 /// - `response[6]` must equal the request `command_class`.
 /// - `response[7]` must equal the request `command_id`.
 ///
@@ -198,8 +207,16 @@ pub fn validate_response(
 ) -> Result<(), bool> {
     match response[0] {
         STATUS_SUCCESSFUL => {}
-        STATUS_BUSY => return Err(false), // soft error — caller should retry
-        STATUS_FAILURE | STATUS_TIMEOUT | STATUS_NOT_SUPPORTED => {
+        STATUS_BUSY => return Err(false), // transient — retry quickly
+        STATUS_TIMEOUT => {
+            // Wireless device is sleeping; wake-up may take 1–2 s.
+            eprintln!(
+                "[USB] STATUS_TIMEOUT for cmd 0x{command_class:02x}/0x{command_id:02x} \
+                 (device sleeping — will retry)",
+            );
+            return Err(false); // soft retry, caller uses a longer sleep
+        }
+        STATUS_FAILURE | STATUS_NOT_SUPPORTED => {
             eprintln!(
                 "[USB] Response status=0x{:02x} for cmd 0x{command_class:02x}/0x{command_id:02x}",
                 response[0]
@@ -226,6 +243,45 @@ pub fn validate_response(
 }
 
 // ── Battery / Power queries ───────────────────────────────────────────────────
+
+// ── Device mode ──────────────────────────────────────────────────────────────
+
+/// Command class for device-mode commands.
+pub const CMD_CLASS_DEVICE_MODE: u8 = 0x00;
+
+/// Command ID: set/get device operating mode.
+pub const CMD_ID_SET_DEVICE_MODE: u8 = 0x04;
+
+/// Mode byte: normal (default at power-on, firmware does not relay vendor
+/// commands to the keyboard unit wirelessly).
+#[allow(dead_code)]
+pub const DEVICE_MODE_NORMAL: u8 = 0x00;
+
+/// Mode byte: driver / host mode — sent by the userspace daemon at startup.
+/// In this mode the keyboard firmware processes vendor HID commands including
+/// battery level queries and lighting effects over the wireless channel.
+/// Source: razerkbd_driver.c comment: "When the daemon discovers the device it
+/// will instruct it to enter driver mode".
+pub const DEVICE_MODE_DRIVER: u8 = 0x03;
+
+/// Builds the 90-byte SET_REPORT payload that activates **driver mode** on the
+/// keyboard.  Driver mode must be enabled before querying battery level or
+/// applying lighting on wireless BlackWidow keyboards; without it the firmware
+/// returns `STATUS_TIMEOUT` for vendor commands.
+///
+/// Source: `razerchromacommon.c → razer_chroma_standard_set_device_mode`
+/// Command: `get_razer_report(0x00, 0x04, 0x02)` + `arguments[0]=mode`.
+pub fn build_set_driver_mode_payload(transaction_id: u8) -> [u8; REPORT_LEN] {
+    let mut buf = [0u8; REPORT_LEN];
+    buf[1] = transaction_id;
+    buf[5] = 0x02; // data_size
+    buf[6] = CMD_CLASS_DEVICE_MODE;
+    buf[7] = CMD_ID_SET_DEVICE_MODE;
+    buf[8] = DEVICE_MODE_DRIVER; // arguments[0] = 0x03
+    buf[9] = 0x00; // arguments[1] = 0x00
+    calculate_razer_checksum(&mut buf);
+    buf
+}
 
 /// Command class for battery and power management queries.
 pub const CMD_CLASS_BATTERY: u8 = 0x07;
@@ -641,6 +697,55 @@ mod tests {
         assert_eq!(payload[88], 0x85, "CRC mismatch");
     }
 
+    /// Battery level query for BlackWidow V3 Mini HyperSpeed (Wired, transaction_id=0x1F).
+    /// Wired keyboards share TRANSACTION_ID_COBRA (0x1F). CRC = 0x02 ^ 0x07 ^ 0x80 = 0x85.
+    #[test]
+    fn test_battery_query_payload_blackwidow_v3_mini_wired() {
+        let payload = build_battery_query_payload(TRANSACTION_ID_COBRA);
+        assert_eq!(
+            payload[1], TRANSACTION_ID_COBRA,
+            "Wired keyboard uses transaction_id 0x1F per razerkbd_driver.c"
+        );
+        assert_eq!(payload[6], CMD_CLASS_BATTERY, "command_class must be 0x07");
+        assert_eq!(payload[7], CMD_ID_BATTERY_LEVEL, "command_id must be 0x80");
+        assert_eq!(payload[88], 0x85, "CRC must be 0x85");
+    }
+
+    /// Battery level query for BlackWidow V3 Mini HyperSpeed (Wireless, transaction_id=0x9F).
+    /// Wireless keyboards use TRANSACTION_ID_KEYBOARD_WIRELESS (0x9F) per razerkbd_driver.c.
+    /// CRC bytes [2..88] are identical — transaction_id at byte[1] is outside CRC range.
+    #[test]
+    fn test_battery_query_payload_blackwidow_v3_mini_wireless() {
+        let payload = build_battery_query_payload(TRANSACTION_ID_KEYBOARD_WIRELESS);
+        assert_eq!(
+            payload[1], TRANSACTION_ID_KEYBOARD_WIRELESS,
+            "Wireless keyboard uses transaction_id 0x9F per razerkbd_driver.c"
+        );
+        assert_eq!(payload[6], CMD_CLASS_BATTERY, "command_class must be 0x07");
+        assert_eq!(payload[7], CMD_ID_BATTERY_LEVEL, "command_id must be 0x80");
+        // CRC covers bytes [2..88] — transaction_id is at byte[1], outside range.
+        // Non-zero bytes in range: [5]=0x02, [6]=0x07, [7]=0x80 → XOR = 0x85
+        assert_eq!(
+            payload[88], 0x85,
+            "CRC must be 0x85 regardless of transaction_id"
+        );
+    }
+
+    /// Charging status query for BlackWidow V3 Mini HyperSpeed (Wireless).
+    /// Uses TRANSACTION_ID_KEYBOARD_WIRELESS (0x9F). CRC = 0x02 ^ 0x07 ^ 0x84 = 0x81.
+    #[test]
+    fn test_charging_query_payload_blackwidow_v3_mini_wireless() {
+        let payload = build_charging_query_payload(TRANSACTION_ID_KEYBOARD_WIRELESS);
+        assert_eq!(
+            payload[1], TRANSACTION_ID_KEYBOARD_WIRELESS,
+            "Wireless keyboard uses transaction_id 0x9F"
+        );
+        assert_eq!(payload[6], CMD_CLASS_BATTERY);
+        assert_eq!(payload[7], CMD_ID_CHARGING_STATUS);
+        // CRC: 0x02 ^ 0x07 ^ 0x84 = 0x81
+        assert_eq!(payload[88], 0x81, "CRC mismatch");
+    }
+
     /// Charging status query for Cobra Pro (transaction_id=0x1F).
     /// CRC = 0x02 ^ 0x07 ^ 0x84 = 0x81
     #[test]
@@ -765,6 +870,68 @@ mod tests {
         // ── Parse: 191 raw → 74 % (191*100/255 = 74) ─────────────────────
         response[9] = 191;
         assert_eq!(parse_battery_response(&response), 74);
+    }
+
+    /// STATUS_TIMEOUT (0x04) must be treated as a soft error so that sleeping
+    /// wireless devices trigger a retry rather than an immediate hard failure.
+    #[test]
+    fn test_validate_response_timeout_is_soft_retry() {
+        let mut resp = [0u8; REPORT_LEN];
+        resp[0] = STATUS_TIMEOUT;
+        resp[6] = CMD_CLASS_BATTERY;
+        resp[7] = CMD_ID_BATTERY_LEVEL;
+        // Err(false) = soft retry, NOT Err(true) = hard fail
+        assert_eq!(
+            validate_response(&resp, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL),
+            Err(false),
+            "STATUS_TIMEOUT must be a soft-retry error (sleeping wireless device)"
+        );
+    }
+
+    /// STATUS_FAILURE (0x03) must remain a hard failure — do not retry.
+    #[test]
+    fn test_validate_response_failure_is_hard() {
+        let mut resp = [0u8; REPORT_LEN];
+        resp[0] = STATUS_FAILURE;
+        resp[6] = CMD_CLASS_BATTERY;
+        resp[7] = CMD_ID_BATTERY_LEVEL;
+        assert_eq!(
+            validate_response(&resp, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL),
+            Err(true),
+            "STATUS_FAILURE must be a hard failure"
+        );
+    }
+
+    /// set_driver_mode payload must carry class=0x00, id=0x04, data_size=0x02,
+    /// arguments[0]=0x03 (DEVICE_MODE_DRIVER) and the correct transaction_id.
+    ///
+    /// CRC = XOR of buf[2..88]:
+    ///   buf[5]=0x02 ^ buf[6]=0x00 ^ buf[7]=0x04 ^ buf[8]=0x03 ^ (all others 0) = 0x05
+    #[test]
+    fn test_build_set_driver_mode_payload() {
+        let txn_id = 0x9F_u8; // wireless BlackWidow V3 Mini HyperSpeed
+        let payload = build_set_driver_mode_payload(txn_id);
+
+        assert_eq!(payload[0], 0x00, "status must be 0x00");
+        assert_eq!(payload[1], txn_id, "transaction_id mismatch");
+        assert_eq!(payload[5], 0x02, "data_size must be 0x02");
+        assert_eq!(
+            payload[6], CMD_CLASS_DEVICE_MODE,
+            "command_class must be 0x00"
+        );
+        assert_eq!(
+            payload[7], CMD_ID_SET_DEVICE_MODE,
+            "command_id must be 0x04"
+        );
+        assert_eq!(
+            payload[8], DEVICE_MODE_DRIVER,
+            "arguments[0] must be 0x03 (driver mode)"
+        );
+        assert_eq!(payload[9], 0x00, "arguments[1] must be 0x00");
+        // CRC = XOR over buf[2..88]: only buf[5..=8] are non-zero
+        // buf[5]=0x02, buf[6]=0x00, buf[7]=0x04, buf[8]=0x03  →  0x02^0x04^0x03 = 0x05
+        let expected_crc = 0x02u8 ^ 0x04 ^ 0x03;
+        assert_eq!(payload[88], expected_crc, "CRC byte mismatch");
     }
 
     // ── DPI payload tests ─────────────────────────────────────────────────────

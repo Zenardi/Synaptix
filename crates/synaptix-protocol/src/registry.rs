@@ -7,6 +7,11 @@ pub enum DeviceType {
     Mouse,
     Keyboard,
     Audio,
+    /// RGB lighting mousepad (Firefly, Goliathus, Strider Chroma, etc.)
+    Mousepad,
+    /// Chroma RGB accessory without a specific category (Mug Holder, Chroma
+    /// HDK, Mouse Dock, Chroma Base, Thunderbolt Dock, Core external GPU, etc.)
+    Accessory,
 }
 
 /// Logical capabilities a device exposes beyond basic connectivity.
@@ -584,7 +589,7 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
         0x0258 => (
             "Razer BlackWidow V3 Mini HyperSpeed (Wired)",
             DeviceType::Keyboard,
-            false,
+            true,
             false,
         ),
         0x0271 => (
@@ -991,16 +996,110 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
             false,
             false,
         ),
-        0x0568 => ("Razer Kraken V4 Pro", DeviceType::Audio, false, false),
-        0x056c => (
-            "Razer Kraken V4 Pro (Main)",
+        0x0568 => ("Razer Kraken V4 Pro", DeviceType::Audio, true, false),
+        0x056c => ("Razer Kraken V4 Pro (Main)", DeviceType::Audio, true, false),
+        0x0F19 => (
+            "Razer Kraken Kitty Edition",
             DeviceType::Audio,
             false,
             false,
         ),
-        0x0F19 => (
-            "Razer Kraken Kitty Edition",
-            DeviceType::Audio,
+
+        // ── Nommo Speakers ────────────────────────────────────────────────────
+        // Source: _reference_openrazer/driver/razeraccessory_driver.c
+        // These are PC speakers with Chroma RGB lighting, no battery or DPI.
+        0x0517 => ("Razer Nommo Chroma", DeviceType::Audio, false, false),
+        0x0518 => ("Razer Nommo Pro", DeviceType::Audio, false, false),
+
+        // ── Mousepads ─────────────────────────────────────────────────────────
+        // Source: razeraccessory_driver.h — all use wIndex=0x00, no battery/DPI.
+        0x0068 => (
+            "Razer Firefly HyperFlux",
+            DeviceType::Mousepad,
+            false,
+            false,
+        ),
+        0x0C00 => ("Razer Firefly", DeviceType::Mousepad, false, false),
+        0x0C04 => ("Razer Firefly V2", DeviceType::Mousepad, false, false),
+        0x0C08 => ("Razer Firefly V2 Pro", DeviceType::Mousepad, false, false),
+        0x0C01 => ("Razer Goliathus Chroma", DeviceType::Mousepad, false, false),
+        0x0C02 => (
+            "Razer Goliathus Chroma Extended",
+            DeviceType::Mousepad,
+            false,
+            false,
+        ),
+        0x0C06 => (
+            "Razer Goliathus Chroma 3XL",
+            DeviceType::Mousepad,
+            false,
+            false,
+        ),
+        0x0C05 => ("Razer Strider Chroma", DeviceType::Mousepad, false, false),
+
+        // ── Chroma Accessories ────────────────────────────────────────────────
+        // Source: razeraccessory_driver.h — all use wIndex=0x00, no battery/DPI.
+
+        // Lighting accessories
+        0x0F07 => (
+            "Razer Chroma Mug Holder",
+            DeviceType::Accessory,
+            false,
+            false,
+        ),
+        0x0F08 => ("Razer Chroma Base", DeviceType::Accessory, false, false),
+        0x0F09 => ("Razer Chroma HDK", DeviceType::Accessory, false, false),
+        0x0F0D => (
+            "Razer Laptop Stand Chroma",
+            DeviceType::Accessory,
+            false,
+            false,
+        ),
+        0x0F12 => ("Razer Raptor 27", DeviceType::Accessory, false, false),
+        0x0F17 => ("Razer Tomahawk ATX", DeviceType::Accessory, false, false),
+        0x0F1F => (
+            "Razer Chroma Addressable RGB Controller",
+            DeviceType::Accessory,
+            false,
+            false,
+        ),
+        0x0F20 => (
+            "Razer Base Station V2 Chroma",
+            DeviceType::Accessory,
+            false,
+            false,
+        ),
+        0x0F26 => (
+            "Razer Charging Pad Chroma",
+            DeviceType::Accessory,
+            false,
+            false,
+        ),
+        0x0F2B => (
+            "Razer Laptop Stand Chroma V2",
+            DeviceType::Accessory,
+            false,
+            false,
+        ),
+
+        // Mouse peripherals
+        0x007E => ("Razer Mouse Dock", DeviceType::Accessory, false, false),
+        0x00A4 => ("Razer Mouse Dock Pro", DeviceType::Accessory, false, false),
+        0x0F1D => (
+            "Razer Mouse Bungee V3 Chroma",
+            DeviceType::Accessory,
+            false,
+            false,
+        ),
+
+        // External GPU enclosures
+        0x0215 => ("Razer Core", DeviceType::Accessory, false, false),
+        0x0F1A => ("Razer Core X Chroma", DeviceType::Accessory, false, false),
+
+        // Thunderbolt 4 dock
+        0x0F21 => (
+            "Razer Thunderbolt 4 Dock Chroma",
+            DeviceType::Accessory,
             false,
             false,
         ),
@@ -1017,8 +1116,9 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
     if has_dpi {
         capabilities.push(DeviceCapability::DpiControl);
     }
-    // Headset capabilities — Sidetone + Microphone for all Kraken audio devices.
-    if matches!(device_type, DeviceType::Audio) {
+    // Headset capabilities — Sidetone + Microphone for all Audio devices
+    // except Nommo speakers (which are speakers, not headsets).
+    if matches!(device_type, DeviceType::Audio) && !matches!(product_id, 0x0517 | 0x0518) {
         capabilities.push(DeviceCapability::Sidetone);
         capabilities.push(DeviceCapability::Microphone);
     }
@@ -1031,8 +1131,14 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
 
     // The Kraken V4 Pro Hub (0x0568) and main device (0x056c) use a composite
     // USB configuration; proprietary HID commands must be routed to Interface 4.
+    //
+    // BlackWidow V3 Mini HyperSpeed (wired 0x0258, wireless 0x0271) route
+    // proprietary HID commands through Interface 3.
+    // Source: razerkbd_driver.c `razer_get_report_params` — report_index = 0x03.
     let control_interface: u8 = if matches!(product_id, 0x0568 | 0x056c) {
         4
+    } else if matches!(product_id, 0x0258 | 0x0271) {
+        3
     } else {
         0
     };
@@ -1127,6 +1233,23 @@ mod tests {
         // Hub requires interface 3 for proprietary HID commands.
         // Wireshark confirmed: wIndex = 0x0004 (interface 4) for haptic payloads.
         assert_eq!(profile.control_interface, 4);
+        assert!(
+            profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Kraken V4 Pro is a wireless headset and must advertise BatteryReporting"
+        );
+    }
+
+    #[test]
+    fn test_registry_resolves_kraken_v4_pro_main_has_battery() {
+        let profile = get_device_profile(0x056c).expect("Kraken V4 Pro (Main) must be in registry");
+        assert!(
+            profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Kraken V4 Pro (Main) is the wireless headset itself and must advertise BatteryReporting"
+        );
     }
 
     #[test]
@@ -1145,11 +1268,209 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_resolves_blackwidow_v3_mini_hyperspeed_wired() {
+        let profile = get_device_profile(0x0258)
+            .expect("BlackWidow V3 Mini HyperSpeed (Wired) must be in registry");
+        assert_eq!(profile.name, "Razer BlackWidow V3 Mini HyperSpeed (Wired)");
+        assert_eq!(profile.device_type, DeviceType::Keyboard);
+        assert_eq!(profile.product_id, 0x0258);
+        assert_eq!(
+            profile.control_interface, 3,
+            "BlackWidow V3 Mini HyperSpeed wired must use interface 3 for HID commands"
+        );
+        // The wired variant is a wireless keyboard charging via USB cable.
+        // It has an internal battery and CAN report battery level (shown as Charging).
+        assert!(
+            profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Wired (charging) keyboard must advertise BatteryReporting — it has an internal battery"
+        );
+    }
+
+    #[test]
+    fn test_registry_resolves_blackwidow_v3_mini_hyperspeed_wireless() {
+        let profile = get_device_profile(0x0271)
+            .expect("BlackWidow V3 Mini HyperSpeed (Wireless) must be in registry");
+        assert_eq!(
+            profile.name,
+            "Razer BlackWidow V3 Mini HyperSpeed (Wireless)"
+        );
+        assert_eq!(profile.device_type, DeviceType::Keyboard);
+        assert_eq!(profile.product_id, 0x0271);
+        assert_eq!(
+            profile.control_interface, 3,
+            "BlackWidow V3 Mini HyperSpeed wireless must use interface 3 for HID commands"
+        );
+        assert!(
+            profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Wireless keyboard must advertise BatteryReporting"
+        );
+    }
+
+    #[test]
     fn test_control_interface_defaults_to_zero() {
-        // Mice and keyboards must use interface 0 (the default).
+        // Mice must use interface 0 (the default).
+        // Keyboards with wireless HID routing (BW V3 Mini) use interface 3.
         let cobra = get_device_profile(0x00B0).expect("Cobra Pro must be in registry");
         assert_eq!(cobra.control_interface, 0);
         let bw = get_device_profile(0x024E).expect("BlackWidow V3 must be in registry");
         assert_eq!(bw.control_interface, 0);
+    }
+
+    // ── Mousepad tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_registry_mousepads_all_present() {
+        // All 8 Razer Chroma mousepads must be registered with DeviceType::Mousepad,
+        // Lighting capability, no battery and no DPI.
+        let pids: &[(u16, &str)] = &[
+            (0x0068, "Razer Firefly HyperFlux"),
+            (0x0C00, "Razer Firefly"),
+            (0x0C04, "Razer Firefly V2"),
+            (0x0C08, "Razer Firefly V2 Pro"),
+            (0x0C01, "Razer Goliathus Chroma"),
+            (0x0C02, "Razer Goliathus Chroma Extended"),
+            (0x0C06, "Razer Goliathus Chroma 3XL"),
+            (0x0C05, "Razer Strider Chroma"),
+        ];
+        for (pid, expected_name) in pids {
+            let profile = get_device_profile(*pid)
+                .unwrap_or_else(|| panic!("PID 0x{pid:04X} not in registry"));
+            assert_eq!(
+                profile.device_type,
+                DeviceType::Mousepad,
+                "PID 0x{pid:04X} should be Mousepad"
+            );
+            assert_eq!(
+                &profile.name, expected_name,
+                "PID 0x{pid:04X} name mismatch"
+            );
+            assert_eq!(
+                profile.control_interface, 0,
+                "Mousepad must use interface 0"
+            );
+            assert!(
+                !profile
+                    .capabilities
+                    .contains(&DeviceCapability::BatteryReporting),
+                "Mousepad 0x{pid:04X} should have no battery"
+            );
+            assert!(
+                !profile.capabilities.contains(&DeviceCapability::DpiControl),
+                "Mousepad 0x{pid:04X} should have no DPI"
+            );
+            assert!(
+                profile
+                    .capabilities
+                    .iter()
+                    .any(|c| matches!(c, DeviceCapability::Lighting(_))),
+                "Mousepad 0x{pid:04X} should have Lighting"
+            );
+        }
+    }
+
+    // ── Nommo speaker tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_registry_nommo_speakers_present() {
+        let pids: &[(u16, &str)] = &[(0x0517, "Razer Nommo Chroma"), (0x0518, "Razer Nommo Pro")];
+        for (pid, expected_name) in pids {
+            let profile = get_device_profile(*pid)
+                .unwrap_or_else(|| panic!("PID 0x{pid:04X} not in registry"));
+            assert_eq!(
+                profile.device_type,
+                DeviceType::Audio,
+                "PID 0x{pid:04X} should be Audio"
+            );
+            assert_eq!(&profile.name, expected_name);
+            assert_eq!(profile.control_interface, 0);
+            assert!(
+                !profile
+                    .capabilities
+                    .contains(&DeviceCapability::BatteryReporting),
+                "Nommo 0x{pid:04X} should have no battery"
+            );
+        }
+    }
+
+    // ── Accessory tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_registry_accessories_dock_present() {
+        let pids: &[(u16, &str)] = &[
+            (0x007E, "Razer Mouse Dock"),
+            (0x00A4, "Razer Mouse Dock Pro"),
+            (0x0F1D, "Razer Mouse Bungee V3 Chroma"),
+            (0x0F20, "Razer Base Station V2 Chroma"),
+        ];
+        for (pid, expected_name) in pids {
+            let profile = get_device_profile(*pid)
+                .unwrap_or_else(|| panic!("PID 0x{pid:04X} not in registry"));
+            assert_eq!(
+                profile.device_type,
+                DeviceType::Accessory,
+                "PID 0x{pid:04X} should be Accessory"
+            );
+            assert_eq!(
+                &profile.name, expected_name,
+                "PID 0x{pid:04X} name mismatch"
+            );
+            assert_eq!(profile.control_interface, 0);
+        }
+    }
+
+    #[test]
+    fn test_registry_accessories_chroma_present() {
+        let pids: &[(u16, &str)] = &[
+            (0x0F07, "Razer Chroma Mug Holder"),
+            (0x0F08, "Razer Chroma Base"),
+            (0x0F09, "Razer Chroma HDK"),
+            (0x0F0D, "Razer Laptop Stand Chroma"),
+            (0x0F12, "Razer Raptor 27"),
+            (0x0F17, "Razer Tomahawk ATX"),
+            (0x0F1F, "Razer Chroma Addressable RGB Controller"),
+            (0x0F26, "Razer Charging Pad Chroma"),
+            (0x0F2B, "Razer Laptop Stand Chroma V2"),
+        ];
+        for (pid, expected_name) in pids {
+            let profile = get_device_profile(*pid)
+                .unwrap_or_else(|| panic!("PID 0x{pid:04X} not in registry"));
+            assert_eq!(
+                profile.device_type,
+                DeviceType::Accessory,
+                "PID 0x{pid:04X} should be Accessory"
+            );
+            assert_eq!(
+                &profile.name, expected_name,
+                "PID 0x{pid:04X} name mismatch"
+            );
+            assert_eq!(profile.control_interface, 0);
+        }
+    }
+
+    #[test]
+    fn test_registry_accessories_hub_present() {
+        let pids: &[(u16, &str)] = &[
+            (0x0215, "Razer Core"),
+            (0x0F1A, "Razer Core X Chroma"),
+            (0x0F21, "Razer Thunderbolt 4 Dock Chroma"),
+        ];
+        for (pid, expected_name) in pids {
+            let profile = get_device_profile(*pid)
+                .unwrap_or_else(|| panic!("PID 0x{pid:04X} not in registry"));
+            assert_eq!(
+                profile.device_type,
+                DeviceType::Accessory,
+                "PID 0x{pid:04X} should be Accessory"
+            );
+            assert_eq!(
+                &profile.name, expected_name,
+                "PID 0x{pid:04X} name mismatch"
+            );
+            assert_eq!(profile.control_interface, 0);
+        }
     }
 }

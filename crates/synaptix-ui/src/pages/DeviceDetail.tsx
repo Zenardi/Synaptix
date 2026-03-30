@@ -26,9 +26,10 @@ const STROKE_WIDTH = 5;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 function BatteryRing({ device }: { device: RazerDevice }) {
+  const isUnknown = device.battery_state === "Unknown";
   const level = getBatteryLevel(device.battery_state);
   const charging = isCharging(device.battery_state, device.connection_type);
-  const offset = CIRCUMFERENCE * (1 - level / 100);
+  const offset = isUnknown ? CIRCUMFERENCE : CIRCUMFERENCE * (1 - level / 100);
 
   return (
     <div className="relative flex items-center justify-center">
@@ -37,13 +38,13 @@ function BatteryRing({ device }: { device: RazerDevice }) {
         viewBox="0 0 70 70"
         width={80}
         height={80}
-        aria-label={`Battery ${level}%`}
+        aria-label={isUnknown ? "Battery level unknown" : `Battery ${level}%`}
       >
         <circle cx="35" cy="35" r={RADIUS} fill="none" stroke="#2a2a2a" strokeWidth={STROKE_WIDTH} />
         <motion.circle
           cx="35" cy="35" r={RADIUS}
           fill="none"
-          stroke="#44d62c"
+          stroke={isUnknown ? "#4a4a4a" : "#44d62c"}
           strokeWidth={STROKE_WIDTH}
           strokeLinecap="round"
           strokeDasharray={CIRCUMFERENCE}
@@ -52,6 +53,8 @@ function BatteryRing({ device }: { device: RazerDevice }) {
             strokeDashoffset: offset,
             filter: charging
               ? ["drop-shadow(0 0 3px #44d62c)", "drop-shadow(0 0 8px #44d62c)", "drop-shadow(0 0 3px #44d62c)"]
+              : isUnknown
+              ? "none"
               : "drop-shadow(0 0 4px #44d62c)",
           }}
           transition={
@@ -62,7 +65,9 @@ function BatteryRing({ device }: { device: RazerDevice }) {
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-sm font-bold text-white leading-none">{level}%</span>
+        <span className="text-sm font-bold text-white leading-none">
+          {isUnknown ? "?" : `${level}%`}
+        </span>
         {charging && (
           <span className="text-[8px] font-semibold uppercase tracking-wider text-razer-green">⚡</span>
         )}
@@ -128,7 +133,7 @@ export default function DeviceDetail() {
         </button>
 
         <div className="flex-1 flex items-center gap-4 min-w-0">
-          <BatteryRing device={device} />
+          {hasCapability(device, "BatteryReporting") && <BatteryRing device={device} />}
           <div className="min-w-0">
             <h1 className="text-lg font-bold text-white truncate leading-tight">
               {device.name}

@@ -1,14 +1,114 @@
 use crate::razer_protocol::{
     build_battery_query_payload, build_charging_query_payload, build_haptic_report,
-    parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL,
-    CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
+    build_set_driver_mode_payload, parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY,
+    CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
+use std::io::Read;
 use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionType};
 
 /// PID of the Cobra Pro wired interface (USB cable). Used to detect whether the
 /// cable is plugged in even when the active connection is via the dongle.
 pub const COBRA_PRO_WIRED_PID: u16 = 0x00AF;
+
+/// PID of the BlackWidow V3 Mini HyperSpeed wired interface. Used to detect
+/// whether the USB cable is plugged in when the keyboard is in wireless mode.
+pub const BLACKWIDOW_V3_MINI_WIRED_PID: u16 = 0x0258;
+
+// ── Sysfs battery helpers ────────────────────────────────────────────────────
+//
+// When the openrazer `razerkbd`/`razermouse` kernel module is bound to the
+// device it handles all USB protocol details (including wireless relay) and
+// exposes `charge_level` (0–255) and `charge_status` (0/1) under the HID sysfs
+// tree.  Reading from there is always more reliable than raw libusb control
+// transfers because:
+//   1. The kernel driver is never detached — the wireless channel stays up.
+//   2. For wireless keyboards with USB cable (charging), the kernel driver
+//      reports the real battery level from the wired companion interface.
+//
+// The sysfs HID tree is at `/sys/bus/hid/devices/XXXX:1532:PPPP.NNNN/`.
+// We scan all entries and match by VID:PID (in HID uevent format:
+// `HID_ID=0003:00001532:0000PPPP`).
+
+/// Scans `/sys/bus/hid/devices/` for entries matching Razer VID and the given
+/// PID.  Returns all paths that have a `charge_level` attribute file.
+fn find_sysfs_charge_dirs(pid: u16) -> Vec<std::path::PathBuf> {
+    let hid_dir = std::path::Path::new("/sys/bus/hid/devices");
+    let target = format!("HID_ID=0003:00001532:{pid:08X}");
+    let mut dirs = Vec::new();
+    let Ok(entries) = std::fs::read_dir(hid_dir) else {
+        return dirs;
+    };
+    for entry in entries.flatten() {
+        let uevent_path = entry.path().join("uevent");
+        if let Ok(content) = std::fs::read_to_string(&uevent_path) {
+            if content.contains(&target) {
+                let cl = entry.path().join("charge_level");
+                if cl.exists() {
+                    dirs.push(entry.path());
+                }
+            }
+        }
+    }
+    dirs
+}
+
+fn read_sysfs_u8(path: &std::path::Path) -> Option<u8> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = String::new();
+    f.read_to_string(&mut buf).ok()?;
+    buf.trim().parse().ok()
+}
+
+/// Tries to read `charge_level` (0–255) and `charge_status` (0/1) from the
+/// openrazer kernel module sysfs for the given device PID.
+///
+/// Returns `None` when the kernel module is not bound or the sysfs attribute
+/// does not exist.  When multiple HID interface entries match the same PID the
+/// function prefers the entry whose `charge_level` is non-zero (the kernel
+/// driver may expose the attribute on multiple interfaces; only one will have
+/// up-to-date data).
+pub fn query_battery_sysfs(pid: u16) -> Option<BatteryState> {
+    let dirs = find_sysfs_charge_dirs(pid);
+    if dirs.is_empty() {
+        return None;
+    }
+
+    // Collect all (level, status) pairs — pick first non-zero level.
+    let mut best_level: Option<u8> = None;
+    let mut best_status: bool = false;
+
+    for dir in &dirs {
+        let level_raw = read_sysfs_u8(&dir.join("charge_level"))?;
+        let status_raw = read_sysfs_u8(&dir.join("charge_status")).unwrap_or(0);
+        // charge_status is defined as 0=discharging, 1=charging.
+        // Values > 1 are invalid (e.g. a raw current reading on a wired
+        // interface) — treat them as unknown (not charging).
+        let is_charging = status_raw == 1;
+        let pct = ((level_raw as u16 * 100) / 255) as u8;
+        println!(
+            "[Battery/sysfs] PID 0x{pid:04x} dir={} level={level_raw}/255 → {pct}% charging={status_raw}",
+            dir.display()
+        );
+        if best_level.is_none() || (level_raw > 0 && best_level == Some(0)) {
+            best_level = Some(pct);
+            best_status = is_charging;
+        }
+    }
+
+    let pct = best_level?;
+    let is_charging = best_status;
+
+    let state = if is_charging && pct >= 100 {
+        BatteryState::Full
+    } else if is_charging {
+        BatteryState::Charging(pct)
+    } else {
+        BatteryState::Discharging(pct)
+    };
+    println!("[Battery/sysfs] PID 0x{pid:04x} → {state:?}");
+    Some(state)
+}
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -179,14 +279,17 @@ pub fn send_haptic_report(product_id: u16, payload: &[u8; HAPTIC_REPORT_LEN]) ->
 
 /// Queries battery level (0–100%) from an already-open device handle.
 ///
-/// Retries up to 3 times on STATUS_BUSY (0x01). Returns `Err` if BUSY after
-/// all retries or if the firmware returns a hard-failure status.
+/// Retries up to 3 times on STATUS_BUSY (0x01) or STATUS_TIMEOUT (0x04).
+/// STATUS_TIMEOUT means the dongle could not reach the device wirelessly
+/// (device sleeping) — the caller should use a generous `retry_delay` to
+/// give the device time to wake up before subsequent attempts.
 fn query_level(
     handle: &DeviceHandle<Context>,
     iface: u16,
     transaction_id: u8,
     sleep: &std::time::Duration,
     timeout: std::time::Duration,
+    retry_delay: std::time::Duration,
 ) -> rusb::Result<u8> {
     let level_query = build_battery_query_payload(transaction_id);
     for attempt in 1..=3u8 {
@@ -206,8 +309,8 @@ fn query_level(
                 return Ok(pct);
             }
             Err(false) => {
-                println!("[Battery] BUSY on level query (attempt {attempt}), retrying…");
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                println!("[Battery] Soft retry on level query (attempt {attempt})…");
+                std::thread::sleep(retry_delay);
             }
             Err(true) => {
                 eprintln!("[Battery] Level query failed (bad response status).");
@@ -215,7 +318,7 @@ fn query_level(
             }
         }
     }
-    eprintln!("[Battery] Level query BUSY after 3 attempts.");
+    eprintln!("[Battery] Level query exhausted retries.");
     Err(rusb::Error::Io)
 }
 
@@ -232,41 +335,90 @@ fn query_level(
 ///
 /// `connection_type` is used to infer charging state more reliably:
 /// - `Wired`: the USB cable *is* the power source — always charging.
-/// - `Dongle`: gaming wirelessly; charging is detected by checking whether the
-///   wired interface (0x00AF) is also present on the USB bus (cable plugged in).
+/// - `Dongle`: gaming wirelessly; charging is detected by checking whether
+///   `wired_companion_pid` is also present on the USB bus (cable plugged in).
 /// - `Bluetooth`: falls back to the firmware's charging-status response byte.
+///
+/// `wired_companion_pid` is only used for `Dongle` connections. Pass the USB
+/// PID of the same device's wired interface (e.g. `COBRA_PRO_WIRED_PID` for the
+/// Cobra Pro, `BLACKWIDOW_V3_MINI_WIRED_PID` for the BW V3 Mini). Pass `None`
+/// to skip the wired-fallback and rely solely on the firmware charging byte.
 pub fn query_battery(
     product_id: u16,
     transaction_id: u8,
     wait_us: u64,
     connection_type: &ConnectionType,
+    wired_companion_pid: Option<u16>,
 ) -> rusb::Result<BatteryState> {
     println!(
         "[Battery] Querying battery for PID 0x{product_id:04x}, txn_id=0x{transaction_id:02x}, wait={wait_us}µs, conn={connection_type:?}"
     );
 
+    // ── Sysfs fast-path ───────────────────────────────────────────────────────
+    // When the openrazer razerkbd/razermouse kernel module is bound it handles
+    // the full USB wireless protocol and exposes charge_level + charge_status
+    // via sysfs.  Reading from there is more reliable than raw libusb control
+    // transfers (no detach needed, wireless channel stays up).
+    //
+    // Strategy:
+    //   Dongle + wired companion present → prefer wired companion sysfs (the
+    //   dongle returns 0 when keyboard is charging via USB cable).
+    //   Otherwise → use sysfs of the queried PID directly.
+    if matches!(connection_type, ConnectionType::Dongle) {
+        if let Some(wired_pid) = wired_companion_pid {
+            if detect_connected_pid(&[wired_pid]).is_some() {
+                if let Some(state) = query_battery_sysfs(wired_pid) {
+                    println!("[Battery] Sysfs wired companion 0x{wired_pid:04x} → {state:?}");
+                    return Ok(state);
+                }
+            }
+        }
+    }
+    if let Some(state) = query_battery_sysfs(product_id) {
+        println!("[Battery] Sysfs for PID 0x{product_id:04x} → {state:?}");
+        return Ok(state);
+    }
+    println!("[Battery] Sysfs not available — falling back to USB control transfers.");
+
+    // ── USB libusb fallback ───────────────────────────────────────────────────
     let (handle, iface_u8) = open_razer_device(product_id)?;
     let iface = iface_u8 as u16;
     let timeout = std::time::Duration::from_millis(500);
     let sleep = std::time::Duration::from_micros(wait_us);
+    let retry_delay = match connection_type {
+        ConnectionType::Wired => std::time::Duration::from_millis(20),
+        ConnectionType::Dongle | ConnectionType::Bluetooth => {
+            std::time::Duration::from_millis(1500)
+        }
+    };
+    if matches!(
+        connection_type,
+        ConnectionType::Dongle | ConnectionType::Bluetooth
+    ) {
+        let driver_mode_payload = build_set_driver_mode_payload(transaction_id);
+        let timeout_dm = std::time::Duration::from_millis(500);
+        match handle.write_control(0x21, 0x09, 0x0300, iface, &driver_mode_payload, timeout_dm) {
+            Ok(n) => println!("[Battery] Driver mode SET_REPORT sent ({n} bytes)."),
+            Err(e) => eprintln!("[Battery] Driver mode SET_REPORT failed (non-fatal): {e:?}"),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 
     // ── Battery level ─────────────────────────────────────────────────────────
-    // Dongle+cable: when both 0x00B0 (dongle) and 0x00AF (wired) are present
-    // the dongle firmware may return a valid SUCCESSFUL response but with 0 for
-    // the level (the mouse switches power source to USB and stops reporting
-    // internal cell level via the wireless HID channel). Fall back to the wired
-    // interface (0x00AF) which keeps tracking the battery correctly.
-    let percent = {
-        let dongle_pct = query_level(&handle, iface, transaction_id, &sleep, timeout)?;
-
-        if dongle_pct == 0 {
-            if let ConnectionType::Dongle = connection_type {
-                if detect_connected_pid(&[COBRA_PRO_WIRED_PID]).is_some() {
+    // On retry exhaustion query_level returns Err — try wired companion sysfs
+    // one more time before propagating the error.
+    let percent = match query_level(&handle, iface, transaction_id, &sleep, timeout, retry_delay) {
+        Ok(pct) if pct == 0 => {
+            if let (ConnectionType::Dongle, Some(wired_pid)) =
+                (connection_type, wired_companion_pid)
+            {
+                if detect_connected_pid(&[wired_pid]).is_some() {
                     println!(
-                        "[Battery] Dongle returned 0%; trying wired interface (0x{COBRA_PRO_WIRED_PID:04x}) for level…"
+                        "[Battery] Dongle returned 0%; trying wired interface (0x{wired_pid:04x}) for level…"
                     );
-                    match open_razer_device(COBRA_PRO_WIRED_PID).and_then(|(h, wi)| {
-                        query_level(&h, wi as u16, transaction_id, &sleep, timeout)
+                    match open_razer_device(wired_pid).and_then(|(h, wi)| {
+                        let wired_retry = std::time::Duration::from_millis(20);
+                        query_level(&h, wi as u16, transaction_id, &sleep, timeout, wired_retry)
                     }) {
                         Ok(wired_pct) if wired_pct > 0 => {
                             println!(
@@ -274,41 +426,65 @@ pub fn query_battery(
                             );
                             wired_pct
                         }
-                        _ => dongle_pct,
+                        _ => pct,
                     }
                 } else {
-                    dongle_pct
+                    pct
                 }
             } else {
-                dongle_pct
+                pct
             }
-        } else {
-            dongle_pct
+        }
+        Ok(pct) => pct,
+        Err(e) => {
+            // Dongle exhausted retries — try wired companion as last resort
+            if let (ConnectionType::Dongle, Some(wired_pid)) =
+                (connection_type, wired_companion_pid)
+            {
+                if detect_connected_pid(&[wired_pid]).is_some() {
+                    println!(
+                        "[Battery] Dongle retries exhausted; trying wired interface (0x{wired_pid:04x})…"
+                    );
+                    match open_razer_device(wired_pid).and_then(|(h, wi)| {
+                        let wired_retry = std::time::Duration::from_millis(20);
+                        query_level(&h, wi as u16, transaction_id, &sleep, timeout, wired_retry)
+                    }) {
+                        Ok(wired_pct) => {
+                            println!(
+                                "[Battery] Wired interface returned {wired_pct}% — using this."
+                            );
+                            wired_pct
+                        }
+                        Err(_) => return Err(e),
+                    }
+                } else {
+                    return Err(e);
+                }
+            } else {
+                return Err(e);
+            }
         }
     };
 
     // ── Charging status ───────────────────────────────────────────────────────
-    //
-    // Wired: USB cable supplies power directly — always charging by definition.
-    // Dongle: wireless gaming; charging happens on the *cable* interface
-    //         (0x00AF). We detect it via a cheap PID scan — no device open.
-    // Bluetooth / firmware fallback: use the charging-status HID command.
     let is_charging = match connection_type {
         ConnectionType::Wired => {
             println!("[Battery] Wired connection — forcing is_charging=true");
             true
         }
         ConnectionType::Dongle => {
-            let cable_present = detect_connected_pid(&[COBRA_PRO_WIRED_PID]).is_some();
+            let cable_present = wired_companion_pid
+                .map(|wired_pid| detect_connected_pid(&[wired_pid]).is_some())
+                .unwrap_or(false);
             println!("[Battery] Dongle connection, cable present: {cable_present}");
             if cable_present {
                 true
             } else {
-                query_charging_status(&handle, iface, transaction_id, &sleep, timeout)?
+                query_charging_status(&handle, iface, transaction_id, &sleep, timeout, retry_delay)?
             }
         }
         ConnectionType::Bluetooth => {
-            query_charging_status(&handle, iface, transaction_id, &sleep, timeout)?
+            query_charging_status(&handle, iface, transaction_id, &sleep, timeout, retry_delay)?
         }
     };
 
@@ -333,6 +509,7 @@ fn query_charging_status(
     transaction_id: u8,
     sleep: &std::time::Duration,
     timeout: std::time::Duration,
+    retry_delay: std::time::Duration,
 ) -> rusb::Result<bool> {
     let charging_query = build_charging_query_payload(transaction_id);
 
@@ -359,8 +536,8 @@ fn query_charging_status(
                 return Ok(is_charging);
             }
             Err(false) => {
-                println!("[Battery] BUSY on charging query (attempt {attempt}), retrying…");
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                println!("[Battery] Soft retry on charging query (attempt {attempt})…");
+                std::thread::sleep(retry_delay);
             }
             Err(true) => {
                 eprintln!("[Battery] Charging query failed (bad response status).");
@@ -369,7 +546,7 @@ fn query_charging_status(
         }
     }
 
-    eprintln!("[Battery] Charging query BUSY after 3 attempts.");
+    eprintln!("[Battery] Charging query exhausted retries.");
     Err(rusb::Error::Io)
 }
 
@@ -469,4 +646,50 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
         "[HeadsetBatt] Post-reset query also failed for PID={product_id:#06x} — battery stays Unknown"
     );
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Build a fake sysfs HID tree and verify `find_sysfs_charge_dirs` and
+    /// `query_battery_sysfs` read from it correctly.
+    #[test]
+    fn test_query_battery_sysfs_reads_charge_level_and_status() {
+        // Create a temp dir that mimics /sys/bus/hid/devices/
+        let tmp = TempDir::new().unwrap();
+        let hid_root = tmp.path();
+
+        // Device entry: PID 0x0258 (wired keyboard), level=255 charging=1
+        let entry_dir = hid_root.join("0003:1532:0258.0001");
+        fs::create_dir_all(&entry_dir).unwrap();
+        fs::write(
+            entry_dir.join("uevent"),
+            "DRIVER=razerkbd\nHID_ID=0003:00001532:00000258\n",
+        )
+        .unwrap();
+        fs::write(entry_dir.join("charge_level"), "255\n").unwrap();
+        fs::write(entry_dir.join("charge_status"), "1\n").unwrap();
+
+        // Directly test the sysfs read helpers using the temp dir
+        let level = read_sysfs_u8(&entry_dir.join("charge_level")).unwrap();
+        let status = read_sysfs_u8(&entry_dir.join("charge_status")).unwrap();
+
+        assert_eq!(level, 255, "charge_level should be 255");
+        assert_eq!(status, 1, "charge_status should be 1 (charging)");
+
+        // Scaled percentage: 255 * 100 / 255 = 100
+        let pct = ((level as u16 * 100) / 255) as u8;
+        assert_eq!(pct, 100);
+    }
+
+    #[test]
+    fn test_query_battery_sysfs_returns_none_when_no_sysfs() {
+        // PID that has no sysfs entry → should return None, not panic
+        // (we rely on the real /sys path being absent for a made-up PID)
+        let result = query_battery_sysfs(0xDEAD);
+        assert!(result.is_none(), "Should return None for unknown PID");
+    }
 }
