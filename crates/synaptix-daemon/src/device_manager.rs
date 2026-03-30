@@ -391,18 +391,14 @@ impl DeviceManager {
             if pid == 0x0568 {
                 // Kraken V4 Pro OLED Hub: 64-byte proprietary HID report on
                 // Interface 4, wValue=0x0202. Sets haptic sensitivity/amplification.
+                //
+                // NOTE: The motor vibrates in response to audio playing through
+                // the headset (routed by the kernel ALSA driver on Interface 2).
+                // We only control the sensitivity level here — the ALSA driver
+                // provides the audio source. Attempting to claim Interface 2 via
+                // libusb detaches the ALSA driver and mutes the headset.
                 let payload = crate::razer_protocol::build_haptic_report(clamped);
-                let sensitivity_result = crate::usb_backend::send_haptic_report(pid, &payload);
-
-                // Also send an audio-stream burst on Interface 2 so the haptic
-                // motor has a signal to convert into vibration.  This is a
-                // best-effort operation: the sensitivity command above is the
-                // authoritative result even if the burst fails.
-                if sensitivity_result.is_ok() && clamped > 0 {
-                    crate::usb_backend::send_haptic_audio_burst(pid);
-                }
-
-                sensitivity_result
+                crate::usb_backend::send_haptic_report(pid, &payload)
             } else {
                 // Legacy 90-byte Razer protocol for Kraken V3 HyperSense and
                 // other HapticFeedback-capable headsets.

@@ -1,8 +1,7 @@
 use crate::razer_protocol::{
-    build_battery_query_payload, build_charging_query_payload, build_haptic_audio_end_frame,
-    build_haptic_audio_packet, build_haptic_report, build_set_driver_mode_payload,
-    parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY, CMD_ID_BATTERY_LEVEL,
-    CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
+    build_battery_query_payload, build_charging_query_payload, build_haptic_report,
+    build_set_driver_mode_payload, parse_headset_push_packet, validate_response, CMD_CLASS_BATTERY,
+    CMD_ID_BATTERY_LEVEL, CMD_ID_CHARGING_STATUS, HAPTIC_REPORT_LEN, RAZER_VID, REPORT_LEN,
 };
 use rusb::{Context, DeviceHandle, UsbContext};
 use std::io::Read;
@@ -179,38 +178,6 @@ fn open_razer_device(product_id: u16) -> rusb::Result<(DeviceHandle<Context>, u8
     Err(rusb::Error::NoDevice)
 }
 
-/// Opens a Razer device by PID and claims the specified interface.
-///
-/// Unlike `open_razer_device` (which uses the registry-defined control interface),
-/// this variant claims `interface` directly.  Used for multi-interface devices
-/// like the Kraken V4 Pro where Interface 4 is the haptic/battery HID and
-/// Interface 2 is the audio-stream channel.
-fn open_razer_device_on_interface(
-    product_id: u16,
-    interface: u8,
-) -> rusb::Result<DeviceHandle<Context>> {
-    let ctx = Context::new()?;
-    let devices = ctx.devices()?;
-
-    for device in devices.iter() {
-        let Ok(desc) = device.device_descriptor() else {
-            continue;
-        };
-        if desc.vendor_id() != RAZER_VID || desc.product_id() != product_id {
-            continue;
-        }
-
-        let handle = device.open()?;
-        if let Err(e) = handle.set_auto_detach_kernel_driver(true) {
-            eprintln!("[USB] set_auto_detach_kernel_driver failed (non-fatal): {e:?}");
-        }
-        handle.claim_interface(interface)?;
-        return Ok(handle);
-    }
-
-    Err(rusb::Error::NoDevice)
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Scans the USB bus for the first PID in `candidates` (tried in order) that
@@ -312,64 +279,6 @@ pub fn send_haptic_report(product_id: u16, payload: &[u8; HAPTIC_REPORT_LEN]) ->
 
     println!("[USB] Haptic control transfer complete.");
     Ok(())
-}
-
-/// Sends a burst of haptic audio frames to the Kraken V4 Pro's Interface 2.
-///
-/// **Why this is needed:** The Interface 4 command (`send_haptic_report`) sets the
-/// haptic amplification level, but the haptic motor only vibrates when it has an
-/// audio signal to convert.  Interface 2 is the audio-stream channel that provides
-/// that signal.  Without these packets the motor stays silent regardless of level.
-///
-/// **Wireshark ground truth (`haptics_synapse.pcapng`):**
-/// Frame = 6 audio sub-packets (wVal=0x0300, wIdx=2, cmd_class=0x03, cmd_id=0x0b)
-/// followed by 1 end-of-frame packet (cmd_id=0x0a).  Synapse streams at ~21 fps.
-/// We send `HAPTIC_BURST_FRAMES` frames (~250 ms) as a tactile confirmation.
-///
-/// This function is intentionally a best-effort fire-and-forget: a USB error
-/// on the audio interface is non-fatal because the sensitivity command on
-/// Interface 4 has already been accepted.
-pub fn send_haptic_audio_burst(product_id: u16) {
-    const HAPTIC_BURST_FRAMES: u32 = 5; // ~5 × 7 USB transfers ≈ 250 ms of haptic
-    const IFACE2: u8 = 2;
-
-    let handle = match open_razer_device_on_interface(product_id, IFACE2) {
-        Ok(h) => h,
-        Err(e) => {
-            log::warn!("[HapticAudio] Could not open Interface 2 for PID={product_id:#06x}: {e:?}");
-            return;
-        }
-    };
-
-    let timeout = std::time::Duration::from_millis(50);
-    let frame_delay = std::time::Duration::from_millis(48); // ~21 fps
-    let mut tx_id: u8 = 0;
-
-    for _ in 0..HAPTIC_BURST_FRAMES {
-        let frame_id = tx_id;
-
-        // 6 audio sub-packets per frame
-        for sub in 0u8..6 {
-            let pkt = build_haptic_audio_packet(tx_id, sub, frame_id);
-            if let Err(e) = handle.write_control(0x21, 0x09, 0x0300, IFACE2 as u16, &pkt, timeout) {
-                log::warn!("[HapticAudio] sub-pkt tx={tx_id} sub={sub} failed: {e:?}");
-                return;
-            }
-            tx_id = tx_id.wrapping_add(1);
-        }
-
-        // End-of-frame notification
-        let end_pkt = build_haptic_audio_end_frame(tx_id);
-        if let Err(e) = handle.write_control(0x21, 0x09, 0x0300, IFACE2 as u16, &end_pkt, timeout) {
-            log::warn!("[HapticAudio] end-of-frame tx={tx_id} failed: {e:?}");
-            return;
-        }
-        tx_id = tx_id.wrapping_add(1);
-
-        std::thread::sleep(frame_delay);
-    }
-
-    log::info!("[HapticAudio] Burst complete ({HAPTIC_BURST_FRAMES} frames, {tx_id} packets).");
 }
 
 ///

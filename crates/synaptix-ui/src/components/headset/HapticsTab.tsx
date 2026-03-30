@@ -50,7 +50,7 @@ export default function HapticsTab({ deviceId, pid }: Props) {
       <div>
         <p className="text-sm font-medium text-white">Haptic Feedback</p>
         <p className="text-[11px] text-gray-500 mt-0.5">
-          Feel in-game events through the headset
+          Controls how strongly the headset vibrates in response to in-game audio
         </p>
       </div>
 
@@ -106,7 +106,7 @@ export default function HapticsTab({ deviceId, pid }: Props) {
             ? "Sending…"
             : activeLevel === 0
               ? "Haptic feedback disabled"
-              : `Intensity: ${activeLevel}/100 — matches headset side-button cycle`}
+              : `Intensity: ${activeLevel}/100 — vibrates with audio playback`}
         </p>
       )}
     </div>

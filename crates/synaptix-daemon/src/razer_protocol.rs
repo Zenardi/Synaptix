@@ -630,6 +630,11 @@ pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
 
 /// Builds a single Interface-2 audio-stream sub-packet (90 bytes).
 ///
+/// **NOTE:** Interface 2 on PID 0x0568 is ALSA Audio Streaming. Claiming it via
+/// libusb detaches the kernel driver and silences the headset. This function is
+/// retained as Wireshark-verified protocol documentation only — do NOT call from
+/// live USB code.
+///
 /// **Wireshark ground truth (`haptics_synapse.pcapng`, pkt 27):**
 /// ```text
 /// wVal=0x0300, wIdx=2, cmd_class=0x03, cmd_id=0x0b
@@ -644,6 +649,7 @@ pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
 /// * `tx_id`    — monotonic transaction counter (wraps at 255)
 /// * `sub_ctr`  — sub-packet index within a frame (0–5)
 /// * `frame_id` — frame identifier (tx_id of the first sub-packet in the frame)
+#[allow(dead_code)]
 pub fn build_haptic_audio_packet(tx_id: u8, sub_ctr: u8, frame_id: u8) -> [u8; 90] {
     let mut buf = [0u8; 90];
     buf[0] = 0x00; // status
@@ -685,6 +691,9 @@ pub fn build_haptic_audio_packet(tx_id: u8, sub_ctr: u8, frame_id: u8) -> [u8; 9
 /// ```
 ///
 /// Sent after every group of 6 audio sub-packets to signal frame completion.
+///
+/// **NOTE:** See `build_haptic_audio_packet` — do NOT call from live USB code.
+#[allow(dead_code)]
 pub fn build_haptic_audio_end_frame(tx_id: u8) -> [u8; 90] {
     let mut buf = [0u8; 90];
     buf[0] = 0x00; // status
