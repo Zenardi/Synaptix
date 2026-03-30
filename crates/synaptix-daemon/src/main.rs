@@ -276,6 +276,65 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             None
         };
 
+    // Initial battery query for the wireless keyboard (mirrors the Cobra Pro startup pattern).
+    // Queries real battery state before D-Bus registration so the DeviceManager holds real data
+    // immediately, the tray shows the keyboard's battery on first render, and the UI avoids
+    // a "?" flash while waiting for the first polling-loop tick (60 s away).
+    if let Some(kbd_pid) = keyboard_wireless_pid {
+        let kbd_name = detected_keyboard
+            .as_ref()
+            .map(|(_, _, _, n)| n.clone())
+            .unwrap_or_else(|| "Razer BlackWidow V3 Mini HyperSpeed (Wireless)".to_string());
+
+        let mut attempt = 0u8;
+        let initial_kbd_battery = loop {
+            let result = tokio::task::spawn_blocking(move || {
+                usb_backend::query_battery(
+                    kbd_pid,
+                    razer_protocol::TRANSACTION_ID_KEYBOARD_WIRELESS,
+                    razer_protocol::WAIT_NEW_RECEIVER_US,
+                    &ConnectionType::Dongle,
+                    Some(usb_backend::BLACKWIDOW_V3_MINI_WIRED_PID),
+                )
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+
+            match result {
+                Some(state) => break state,
+                None => {
+                    attempt += 1;
+                    if attempt >= 3 {
+                        log::warn!(
+                            "[KeyboardBatt] Startup query failed after 3 attempts — will retry in polling loop."
+                        );
+                        break BatteryState::Unknown;
+                    }
+                    log::warn!(
+                        "[KeyboardBatt] Startup attempt {attempt} failed, retrying in 500ms…"
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
+        };
+
+        log::info!("[KeyboardBatt] Startup state: {initial_kbd_battery:?}");
+
+        // Update DeviceManager with the real state before D-Bus is registered.
+        manager.update_battery("blackwidow-v3-mini", initial_kbd_battery.clone());
+
+        // Always push to tray so the keyboard appears in the menu from startup.
+        let (pct, is_charging) = battery_to_pct(&initial_kbd_battery);
+        tx.send(TrayUpdate {
+            device_id: "blackwidow-v3-mini".to_string(),
+            device_name: kbd_name,
+            percentage: pct,
+            is_charging,
+        })
+        .ok();
+    }
+
     // Auto-apply any persisted settings (lighting, DPI) to hardware at startup.
     tokio::task::block_in_place(|| manager.apply_saved_settings());
 
