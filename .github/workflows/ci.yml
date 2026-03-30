@@ -49,6 +49,7 @@ jobs:
           output: trivy-cargo.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          limit-severities-for-sarif: true
           exit-code: '1'
 
       - name: Upload Trivy SARIF — Rust
@@ -69,6 +70,7 @@ jobs:
           output: trivy-npm.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          limit-severities-for-sarif: true
           exit-code: '1'
 
       - name: Upload Trivy SARIF — Node.js

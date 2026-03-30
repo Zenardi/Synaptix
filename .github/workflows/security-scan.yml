@@ -44,6 +44,10 @@ jobs:
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          # Restrict SARIF output AND exit-code evaluation to HIGH,CRITICAL only.
+          # Without this, v0.35.0 builds the SARIF with all severities and
+          # exit-code 1 triggers on MEDIUM findings too.
+          limit-severities-for-sarif: true
           # Fails the CI build — blocks the PR from merging.
           exit-code: '1'
 
