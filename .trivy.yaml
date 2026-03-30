@@ -1,0 +1,24 @@
+# Trivy centralised configuration for the Synaptix monorepo.
+# Docs: https://aquasecurity.github.io/trivy/latest/docs/references/configuration/config-file/
+
+scan:
+  # Only scan for known CVEs in dependencies (no secret/misconfig scanning).
+  scanners:
+    - vuln
+
+vulnerability:
+  # Block on HIGH and CRITICAL severity only.
+  severity:
+    - HIGH
+    - CRITICAL
+  # Ignore vulnerabilities that have no upstream fix yet,
+  # so the build only fails when a fix is available to apply.
+  ignore-unfixed: true
+
+output:
+  format: sarif
+
+# Add per-CVE exceptions here when a vulnerability is a false positive or
+# has been assessed and accepted as a known risk.
+# Example:
+# ignore-policy: .trivyignore.rego

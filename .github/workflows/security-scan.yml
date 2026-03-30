@@ -1,0 +1,74 @@
+name: Security Scan (Trivy)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'   # Every Monday at 06:00 UTC — catches newly disclosed CVEs
+
+# Required for uploading SARIF results to GitHub Security tab.
+permissions:
+  contents: read
+  security-events: write
+
+# Silence the Node.js 20 deprecation warning from GitHub-managed actions.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  trivy-scan:
+    name: Trivy / trivy-scan (${{ matrix.target.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Run both scans even if one fails so all vulnerabilities are visible.
+      fail-fast: false
+      matrix:
+        target:
+          - name: Rust (Cargo.lock)
+            scan-ref: Cargo.lock
+          - name: Node.js (synaptix-ui)
+            scan-ref: crates/synaptix-ui
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # ── Trivy DB cache (node24-native, replaces trivy-action's internal node20 cache) ──
+      - name: Get date for Trivy cache key
+        id: trivy-date
+        run: echo "date=$(date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Trivy vulnerability database from cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ steps.trivy-date.outputs.date }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ matrix.target.scan-ref }}
+          scanners: vuln
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          # Restrict SARIF output AND exit-code evaluation to HIGH,CRITICAL only.
+          # Without this, v0.35.0 builds the SARIF with all severities and
+          # exit-code 1 triggers on MEDIUM findings too.
+          limit-severities-for-sarif: true
+          # Fails the CI build — blocks the PR from merging.
+          exit-code: '1'
+          # Disable trivy-action's internal node20 cache; we use actions/cache@v5 above.
+          cache: false
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        # Always upload so results appear in the Security tab even on failure.
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-${{ matrix.target.name }}
