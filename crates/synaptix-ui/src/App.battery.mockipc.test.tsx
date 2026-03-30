@@ -15,10 +15,13 @@
  *   - invoke returns mouse Discharging:75 → renders 75%
  *   - invoke("get_razer_devices") is called exactly once on mount
  *   - error from invoke → "Daemon unavailable" message
+ *   - ServiceUnknown D-Bus error → DaemonUnavailableScreen with setup instructions
+ *   - non-ServiceUnknown error → raw "Daemon unavailable" generic message
+ *   - Retry button re-invokes get_razer_devices and shows devices on success
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, waitFor, act, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, act, cleanup, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import "@testing-library/jest-dom/vitest";
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
@@ -179,5 +182,116 @@ describe("App battery display — mockIPC real IPC layer", () => {
     await waitFor(() =>
       expect(screen.getByText(/Daemon unavailable/i)).toBeInTheDocument(),
     );
+  });
+
+  it("shows friendly setup instructions for ServiceUnknown D-Bus error", async () => {
+    mockIPC(
+      (cmd) => {
+        if (cmd === "get_razer_devices")
+          throw new Error(
+            "org.freedesktop.DBus.Error.ServiceUnknown: The name was not provided by any .service files",
+          );
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Synaptix Daemon is not running/i),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(/systemctl --user daemon-reload/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/systemctl --user start synaptix-daemon\.service/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /retry connection/i }),
+    ).toBeInTheDocument();
+    // Raw D-Bus error string must NOT be shown to the user
+    expect(
+      screen.queryByText(/The name was not provided by any/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows generic error message for non-ServiceUnknown errors", async () => {
+    mockIPC(
+      (cmd) => {
+        if (cmd === "get_razer_devices")
+          throw new Error("Permission denied on USB device");
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/Daemon unavailable/i)).toBeInTheDocument(),
+    );
+    // Friendly screen must NOT appear for unrelated errors
+    expect(
+      screen.queryByText(/Synaptix Daemon is not running/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("retries get_razer_devices and shows device list after Retry is clicked", async () => {
+    let callCount = 0;
+
+    mockIPC(
+      (cmd) => {
+        if (cmd === "get_razer_devices") {
+          callCount++;
+          if (callCount === 1)
+            throw new Error(
+              "org.freedesktop.DBus.Error.ServiceUnknown: The name was not provided by any .service files",
+            );
+          return [MOUSE_DISCHARGING];
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>,
+    );
+
+    // First render shows the friendly error screen
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Synaptix Daemon is not running/i),
+      ).toBeInTheDocument(),
+    );
+
+    // Click Retry — second invoke call succeeds
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /retry connection/i }));
+    });
+
+    // Device list appears and error screen is gone
+    await waitFor(() =>
+      expect(
+        screen.getByText("Razer DeathAdder V2 Pro"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/Synaptix Daemon is not running/i),
+    ).not.toBeInTheDocument();
+    expect(callCount).toBe(2);
   });
 });
