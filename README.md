@@ -120,7 +120,7 @@ Synaptix is a Rust-powered daemon and GUI that brings first-class Razer hardware
 ### 🧪 Quality
 - **Strictly TDD** — every layer (protocol types, daemon logic, USB payload math, React components) built test-first
 - **CI pipeline** — `cargo test`, `clippy -D warnings`, `cargo fmt`, and WebDriver E2E tests on every push
-- **42 Rust unit tests** across daemon and protocol crates
+- **78+ Rust unit tests** across daemon and protocol crates
 
 ---
 
@@ -389,8 +389,10 @@ Synaptix supports **219+ Razer peripherals** across mice, keyboards, and headset
 | Device | Type | PID(s) | Static RGB | DPI Control | Battery Reporting |
 |---|---|---|---|---|---|
 | Razer Cobra Pro | Mouse | `0x00AF` (wired) · `0x00B0` (wireless) | ✅ Tested | ✅ Tested | ✅ Tested |
+| Razer Viper Ultimate | Mouse | `0x007A` (wired) · `0x007B` (wireless dongle) | ✅ Tested | ✅ Tested | ✅ Tested |
 | Razer DeathAdder V2 Pro | Mouse | `0x007C` (wired) · `0x007D` (wireless) | ✅ Implemented | 🔄 Untested | 🔄 Untested |
 | Razer Kraken V4 Pro | Headset | `0x0568` (USB hub) · `0x056C` (audio) | N/A | N/A | ✅ Tested |
+| Razer BlackWidow V3 Mini HyperSpeed | Keyboard | `0x0258` (wired) · `0x0271` (wireless) | ✅ Tested | N/A | ✅ Tested |
 
 **Legend:** ✅ Verified on real hardware &nbsp;|&nbsp; 🔄 Protocol mapped, needs hardware confirmation &nbsp;|&nbsp; N/A Not applicable
 

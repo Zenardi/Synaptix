@@ -11,6 +11,10 @@ use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionTy
 /// cable is plugged in even when the active connection is via the dongle.
 pub const COBRA_PRO_WIRED_PID: u16 = 0x00AF;
 
+/// PID of the Viper Ultimate wired interface (USB cable). Used to detect whether
+/// the cable is plugged in when the mouse is in wireless mode.
+pub const VIPER_ULTIMATE_WIRED_PID: u16 = 0x007A;
+
 /// PID of the BlackWidow V3 Mini HyperSpeed wired interface. Used to detect
 /// whether the USB cable is plugged in when the keyboard is in wireless mode.
 pub const BLACKWIDOW_V3_MINI_WIRED_PID: u16 = 0x0258;

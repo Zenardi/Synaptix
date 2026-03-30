@@ -16,6 +16,13 @@ const COBRA_PRO_PIDS: &[(u16, ConnectionType)] = &[
     (0x00AF, ConnectionType::Wired),  // USB cable (charging / wired-only mode)
 ];
 
+// PIDs for the Viper Ultimate, dongle-first: when both are plugged in the
+// dongle is the active gaming connection and the cable is just charging.
+const VIPER_ULTIMATE_PIDS: &[(u16, ConnectionType)] = &[
+    (0x007B, ConnectionType::Dongle), // HyperSpeed dongle (wireless)
+    (0x007A, ConnectionType::Wired),  // USB cable (wired/charging mode)
+];
+
 // PIDs for the BlackWidow V3 Mini HyperSpeed.
 // Wireless (dongle) is preferred when both are present.
 // The wired variant (0x0258) is the keyboard charging via USB cable — it
@@ -50,6 +57,29 @@ fn detect_cobra_pro() -> (u16, RazerProductId, ConnectionType, String) {
         .unwrap_or_else(|| "Razer Cobra Pro".to_string());
 
     (pid, product_id, conn_type, name)
+}
+
+/// Probe USB for the Viper Ultimate (wired or wireless dongle).
+///
+/// Returns `None` when neither PID is found on the USB bus (device not connected).
+fn detect_viper_ultimate() -> Option<(u16, RazerProductId, ConnectionType, String)> {
+    let candidate_pids: Vec<u16> = VIPER_ULTIMATE_PIDS.iter().map(|(p, _)| *p).collect();
+    let found_pid = usb_backend::detect_connected_pid(&candidate_pids)?;
+
+    let (pid, conn_type) = VIPER_ULTIMATE_PIDS
+        .iter()
+        .find(|(cp, _)| *cp == found_pid)
+        .map(|(cp, ct)| (*cp, ct.clone()))?;
+
+    let product_id = match pid {
+        0x007A => RazerProductId::ViperUltimateWired,
+        _ => RazerProductId::ViperUltimateWireless,
+    };
+    let name = get_device_profile(pid)
+        .map(|p| p.name)
+        .unwrap_or_else(|| "Razer Viper Ultimate".to_string());
+
+    Some((pid, product_id, conn_type, name))
 }
 
 /// Probe USB for the BlackWidow V3 Mini HyperSpeed (wired or wireless).
@@ -197,6 +227,110 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             connection_type: initial_conn,
         },
     );
+
+    // ── Viper Ultimate detection ──────────────────────────────────────────────
+    let detected_viper = tokio::task::spawn_blocking(detect_viper_ultimate)
+        .await
+        .unwrap_or(None);
+
+    // Battery config for Viper Ultimate: txn_id=0xFF (Viper receiver family),
+    // wait=59.9ms, wired companion=0x007A.
+    // `None` means no Viper Ultimate was detected.
+    let viper_battery_cfg: Option<(u16, u8, ConnectionType, Option<u16>)> = if let Some((
+        pid,
+        product_id,
+        conn_type,
+        name,
+    )) = &detected_viper
+    {
+        let pid = *pid;
+        if let Some(profile) = get_device_profile(pid) {
+            let device_id = "viper-ultimate".to_string();
+            log::info!(
+                "[Detect] {} on USB: PID={pid:#06x} conn={}",
+                profile.name,
+                conn_type.label()
+            );
+
+            // Startup battery: try up to 3 times.
+            let mut attempt = 0u8;
+            let initial_viper_battery = loop {
+                let pid_c = pid;
+                let conn_c = conn_type.clone();
+                let companion = if matches!(conn_type, ConnectionType::Dongle) {
+                    Some(usb_backend::VIPER_ULTIMATE_WIRED_PID)
+                } else {
+                    None
+                };
+                let result = tokio::task::spawn_blocking(move || {
+                    usb_backend::query_battery(
+                        pid_c,
+                        razer_protocol::TRANSACTION_ID_VIPER,
+                        razer_protocol::WAIT_VIPER_RECEIVER_US,
+                        &conn_c,
+                        companion,
+                    )
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok());
+
+                match result {
+                    Some(state) => break state,
+                    None => {
+                        attempt += 1;
+                        if attempt >= 3 {
+                            log::warn!("[ViperBatt] Startup query failed after 3 attempts — defaulting to Unknown.");
+                            break BatteryState::Unknown;
+                        }
+                        log::warn!(
+                            "[ViperBatt] Startup attempt {attempt} failed, retrying in 500ms…"
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    }
+                }
+            };
+
+            log::info!("[ViperBatt] Startup state: {initial_viper_battery:?}");
+
+            manager.add_device(
+                device_id.clone(),
+                RazerDevice {
+                    name: name.clone(),
+                    product_id: product_id.clone(),
+                    battery_state: initial_viper_battery.clone(),
+                    capabilities: profile.capabilities,
+                    connection_type: conn_type.clone(),
+                },
+            );
+
+            // Push startup battery to tray.
+            let (pct, is_charging) = battery_to_pct(&initial_viper_battery);
+            tx.send(TrayUpdate {
+                device_id,
+                device_name: name.clone(),
+                percentage: pct,
+                is_charging,
+            })
+            .ok();
+
+            let companion = if matches!(conn_type, ConnectionType::Dongle) {
+                Some(usb_backend::VIPER_ULTIMATE_WIRED_PID)
+            } else {
+                None
+            };
+            Some((
+                pid,
+                razer_protocol::TRANSACTION_ID_VIPER,
+                conn_type.clone(),
+                companion,
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Probe for known headsets on the USB bus.
     // 0x0568 = Kraken V4 Pro OLED Hub (always present when the headset is plugged in).
@@ -520,6 +654,75 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                 }
 
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            }
+        });
+    }
+
+    // ── Viper Ultimate battery polling loop (every 60 s) ─────────────────────
+    if let Some((viper_pid, viper_txn, viper_conn_type, viper_companion)) = viper_battery_cfg {
+        let viper_conn = conn.clone();
+        let viper_tx = tx.clone();
+        let viper_display_name = detected_viper
+            .as_ref()
+            .map(|(_, _, _, n)| n.clone())
+            .unwrap_or_else(|| "Razer Viper Ultimate".to_string());
+
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+            loop {
+                let ct = viper_conn_type.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    usb_backend::query_battery(
+                        viper_pid,
+                        viper_txn,
+                        razer_protocol::WAIT_VIPER_RECEIVER_US,
+                        &ct,
+                        viper_companion,
+                    )
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok());
+
+                if let Some(new_state) = result {
+                    let state_json = serde_json::to_string(&new_state)
+                        .unwrap_or_else(|_| "\"Unknown\"".to_string());
+                    let (pct, is_charging) = battery_to_pct(&new_state);
+
+                    if let Ok(iface_ref) = viper_conn
+                        .object_server()
+                        .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                        .await
+                    {
+                        {
+                            let mut iface = iface_ref.get_mut().await;
+                            iface.update_battery("viper-ultimate", new_state.clone());
+                        }
+                        DeviceManager::battery_changed(
+                            iface_ref.signal_emitter(),
+                            "viper-ultimate",
+                            &state_json,
+                        )
+                        .await
+                        .ok();
+                    }
+
+                    viper_tx
+                        .send(TrayUpdate {
+                            device_id: "viper-ultimate".to_string(),
+                            device_name: viper_display_name.clone(),
+                            percentage: pct,
+                            is_charging,
+                        })
+                        .ok();
+
+                    log::info!("[ViperBatt] Poll: viper-ultimate → {new_state:?}");
+                } else {
+                    log::warn!("[ViperBatt] Battery query failed for PID=0x{viper_pid:04x} — device may be off or out of range.");
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
             }
         });
     }

@@ -6,13 +6,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RazerProductId {
     // Mice
-    DeathAdderV2Pro,  // 0x007C
-    MambaWireless,    // 0x0073
-    ViperUltimate,    // 0x007A
-    BasiliskUltimate, // 0x0085
-    NagaPro,          // 0x008F
-    CobraProWired,    // 0x00AF
-    CobraProWireless, // 0x00B0
+    DeathAdderV2Pro,       // 0x007C
+    MambaWireless,         // 0x0073
+    ViperUltimateWired,    // 0x007A
+    ViperUltimateWireless, // 0x007B
+    BasiliskUltimate,      // 0x0085
+    NagaPro,               // 0x008F
+    CobraProWired,         // 0x00AF
+    CobraProWireless,      // 0x00B0
     // Headsets
     KrakenUltimate, // 0x0527
     KrakenKittyV2,  // 0x0560 (Razer Kraken Kitty V2)
@@ -99,7 +100,8 @@ impl RazerProductId {
         match self {
             RazerProductId::DeathAdderV2Pro => 0x007C,
             RazerProductId::MambaWireless => 0x0073,
-            RazerProductId::ViperUltimate => 0x007A,
+            RazerProductId::ViperUltimateWired => 0x007A,
+            RazerProductId::ViperUltimateWireless => 0x007B,
             RazerProductId::BasiliskUltimate => 0x0085,
             RazerProductId::NagaPro => 0x008F,
             RazerProductId::CobraProWired => 0x00AF,
