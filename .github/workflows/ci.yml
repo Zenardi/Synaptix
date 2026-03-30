@@ -40,7 +40,7 @@ jobs:
 
       # ── Security scan: Rust dependencies ─────────────────────────────────────
       - name: Trivy scan — Rust (Cargo.lock)
-        uses: aquasecurity/trivy-action@v0.33.1
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
           scan-ref: Cargo.lock
@@ -52,7 +52,7 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF — Rust
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-cargo.sarif
@@ -60,7 +60,7 @@ jobs:
 
       # ── Security scan: Node.js dependencies ──────────────────────────────────
       - name: Trivy scan — Node.js (synaptix-ui)
-        uses: aquasecurity/trivy-action@v0.33.1
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
           scan-ref: crates/synaptix-ui
@@ -72,7 +72,7 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF — Node.js
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-npm.sarif
