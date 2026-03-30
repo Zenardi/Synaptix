@@ -1145,6 +1145,47 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_resolves_blackwidow_v3_mini_hyperspeed_wired() {
+        let profile = get_device_profile(0x0258)
+            .expect("BlackWidow V3 Mini HyperSpeed (Wired) must be in registry");
+        assert_eq!(profile.name, "Razer BlackWidow V3 Mini HyperSpeed (Wired)");
+        assert_eq!(profile.device_type, DeviceType::Keyboard);
+        assert_eq!(profile.product_id, 0x0258);
+        assert_eq!(
+            profile.control_interface, 0,
+            "Keyboard must use interface 0"
+        );
+        assert!(
+            !profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Wired keyboard must NOT advertise BatteryReporting"
+        );
+    }
+
+    #[test]
+    fn test_registry_resolves_blackwidow_v3_mini_hyperspeed_wireless() {
+        let profile = get_device_profile(0x0271)
+            .expect("BlackWidow V3 Mini HyperSpeed (Wireless) must be in registry");
+        assert_eq!(
+            profile.name,
+            "Razer BlackWidow V3 Mini HyperSpeed (Wireless)"
+        );
+        assert_eq!(profile.device_type, DeviceType::Keyboard);
+        assert_eq!(profile.product_id, 0x0271);
+        assert_eq!(
+            profile.control_interface, 0,
+            "Keyboard must use interface 0"
+        );
+        assert!(
+            profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Wireless keyboard must advertise BatteryReporting"
+        );
+    }
+
+    #[test]
     fn test_control_interface_defaults_to_zero() {
         // Mice and keyboards must use interface 0 (the default).
         let cobra = get_device_profile(0x00B0).expect("Cobra Pro must be in registry");

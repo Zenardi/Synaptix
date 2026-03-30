@@ -29,6 +29,10 @@ pub const TRANSACTION_ID_DA: u8 = 0x3F;
 /// Transaction ID for Cobra Pro, Basilisk V3 Pro, and newer wireless mice.
 pub const TRANSACTION_ID_COBRA: u8 = 0x1F;
 
+/// Transaction ID for wireless keyboards (BlackWidow V3 Mini HyperSpeed Wireless, etc.).
+/// Source: `razerkbd_driver.c` — charge_level switch for `_WIRELESS` PIDs.
+pub const TRANSACTION_ID_KEYBOARD_WIRELESS: u8 = 0x9F;
+
 // ── Per-device LED zone IDs ───────────────────────────────────────────────────
 
 /// Zero / catch-all LED zone (used by Cobra Pro and many newer mice).
@@ -639,6 +643,55 @@ mod tests {
         assert_eq!(payload[89], 0x00, "reserved byte must be 0x00");
         // CRC: 0x02 ^ 0x07 ^ 0x80 = 0x85
         assert_eq!(payload[88], 0x85, "CRC mismatch");
+    }
+
+    /// Battery level query for BlackWidow V3 Mini HyperSpeed (Wired, transaction_id=0x1F).
+    /// Wired keyboards share TRANSACTION_ID_COBRA (0x1F). CRC = 0x02 ^ 0x07 ^ 0x80 = 0x85.
+    #[test]
+    fn test_battery_query_payload_blackwidow_v3_mini_wired() {
+        let payload = build_battery_query_payload(TRANSACTION_ID_COBRA);
+        assert_eq!(
+            payload[1], TRANSACTION_ID_COBRA,
+            "Wired keyboard uses transaction_id 0x1F per razerkbd_driver.c"
+        );
+        assert_eq!(payload[6], CMD_CLASS_BATTERY, "command_class must be 0x07");
+        assert_eq!(payload[7], CMD_ID_BATTERY_LEVEL, "command_id must be 0x80");
+        assert_eq!(payload[88], 0x85, "CRC must be 0x85");
+    }
+
+    /// Battery level query for BlackWidow V3 Mini HyperSpeed (Wireless, transaction_id=0x9F).
+    /// Wireless keyboards use TRANSACTION_ID_KEYBOARD_WIRELESS (0x9F) per razerkbd_driver.c.
+    /// CRC bytes [2..88] are identical — transaction_id at byte[1] is outside CRC range.
+    #[test]
+    fn test_battery_query_payload_blackwidow_v3_mini_wireless() {
+        let payload = build_battery_query_payload(TRANSACTION_ID_KEYBOARD_WIRELESS);
+        assert_eq!(
+            payload[1], TRANSACTION_ID_KEYBOARD_WIRELESS,
+            "Wireless keyboard uses transaction_id 0x9F per razerkbd_driver.c"
+        );
+        assert_eq!(payload[6], CMD_CLASS_BATTERY, "command_class must be 0x07");
+        assert_eq!(payload[7], CMD_ID_BATTERY_LEVEL, "command_id must be 0x80");
+        // CRC covers bytes [2..88] — transaction_id is at byte[1], outside range.
+        // Non-zero bytes in range: [5]=0x02, [6]=0x07, [7]=0x80 → XOR = 0x85
+        assert_eq!(
+            payload[88], 0x85,
+            "CRC must be 0x85 regardless of transaction_id"
+        );
+    }
+
+    /// Charging status query for BlackWidow V3 Mini HyperSpeed (Wireless).
+    /// Uses TRANSACTION_ID_KEYBOARD_WIRELESS (0x9F). CRC = 0x02 ^ 0x07 ^ 0x84 = 0x81.
+    #[test]
+    fn test_charging_query_payload_blackwidow_v3_mini_wireless() {
+        let payload = build_charging_query_payload(TRANSACTION_ID_KEYBOARD_WIRELESS);
+        assert_eq!(
+            payload[1], TRANSACTION_ID_KEYBOARD_WIRELESS,
+            "Wireless keyboard uses transaction_id 0x9F"
+        );
+        assert_eq!(payload[6], CMD_CLASS_BATTERY);
+        assert_eq!(payload[7], CMD_ID_CHARGING_STATUS);
+        // CRC: 0x02 ^ 0x07 ^ 0x84 = 0x81
+        assert_eq!(payload[88], 0x81, "CRC mismatch");
     }
 
     /// Charging status query for Cobra Pro (transaction_id=0x1F).

@@ -10,6 +10,10 @@ use synaptix_protocol::{registry::get_device_profile, BatteryState, ConnectionTy
 /// cable is plugged in even when the active connection is via the dongle.
 pub const COBRA_PRO_WIRED_PID: u16 = 0x00AF;
 
+/// PID of the BlackWidow V3 Mini HyperSpeed wired interface. Used to detect
+/// whether the USB cable is plugged in when the keyboard is in wireless mode.
+pub const BLACKWIDOW_V3_MINI_WIRED_PID: u16 = 0x0258;
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Opens the first Razer device matching `product_id` and returns its handle
@@ -232,14 +236,20 @@ fn query_level(
 ///
 /// `connection_type` is used to infer charging state more reliably:
 /// - `Wired`: the USB cable *is* the power source — always charging.
-/// - `Dongle`: gaming wirelessly; charging is detected by checking whether the
-///   wired interface (0x00AF) is also present on the USB bus (cable plugged in).
+/// - `Dongle`: gaming wirelessly; charging is detected by checking whether
+///   `wired_companion_pid` is also present on the USB bus (cable plugged in).
 /// - `Bluetooth`: falls back to the firmware's charging-status response byte.
+///
+/// `wired_companion_pid` is only used for `Dongle` connections. Pass the USB
+/// PID of the same device's wired interface (e.g. `COBRA_PRO_WIRED_PID` for the
+/// Cobra Pro, `BLACKWIDOW_V3_MINI_WIRED_PID` for the BW V3 Mini). Pass `None`
+/// to skip the wired-fallback and rely solely on the firmware charging byte.
 pub fn query_battery(
     product_id: u16,
     transaction_id: u8,
     wait_us: u64,
     connection_type: &ConnectionType,
+    wired_companion_pid: Option<u16>,
 ) -> rusb::Result<BatteryState> {
     println!(
         "[Battery] Querying battery for PID 0x{product_id:04x}, txn_id=0x{transaction_id:02x}, wait={wait_us}µs, conn={connection_type:?}"
@@ -251,21 +261,23 @@ pub fn query_battery(
     let sleep = std::time::Duration::from_micros(wait_us);
 
     // ── Battery level ─────────────────────────────────────────────────────────
-    // Dongle+cable: when both 0x00B0 (dongle) and 0x00AF (wired) are present
-    // the dongle firmware may return a valid SUCCESSFUL response but with 0 for
-    // the level (the mouse switches power source to USB and stops reporting
-    // internal cell level via the wireless HID channel). Fall back to the wired
-    // interface (0x00AF) which keeps tracking the battery correctly.
+    // Dongle+cable: when both the dongle PID and wired PID are present the
+    // dongle firmware may return a valid SUCCESSFUL response but with 0 for the
+    // level (device switches power source to USB and stops reporting internal
+    // cell level via the wireless HID channel). Fall back to the wired interface
+    // which keeps tracking the battery correctly.
     let percent = {
         let dongle_pct = query_level(&handle, iface, transaction_id, &sleep, timeout)?;
 
         if dongle_pct == 0 {
-            if let ConnectionType::Dongle = connection_type {
-                if detect_connected_pid(&[COBRA_PRO_WIRED_PID]).is_some() {
+            if let (ConnectionType::Dongle, Some(wired_pid)) =
+                (connection_type, wired_companion_pid)
+            {
+                if detect_connected_pid(&[wired_pid]).is_some() {
                     println!(
-                        "[Battery] Dongle returned 0%; trying wired interface (0x{COBRA_PRO_WIRED_PID:04x}) for level…"
+                        "[Battery] Dongle returned 0%; trying wired interface (0x{wired_pid:04x}) for level…"
                     );
-                    match open_razer_device(COBRA_PRO_WIRED_PID).and_then(|(h, wi)| {
+                    match open_razer_device(wired_pid).and_then(|(h, wi)| {
                         query_level(&h, wi as u16, transaction_id, &sleep, timeout)
                     }) {
                         Ok(wired_pct) if wired_pct > 0 => {
@@ -290,8 +302,7 @@ pub fn query_battery(
     // ── Charging status ───────────────────────────────────────────────────────
     //
     // Wired: USB cable supplies power directly — always charging by definition.
-    // Dongle: wireless gaming; charging happens on the *cable* interface
-    //         (0x00AF). We detect it via a cheap PID scan — no device open.
+    // Dongle: wireless gaming; charging detected via wired_companion_pid scan.
     // Bluetooth / firmware fallback: use the charging-status HID command.
     let is_charging = match connection_type {
         ConnectionType::Wired => {
@@ -299,7 +310,9 @@ pub fn query_battery(
             true
         }
         ConnectionType::Dongle => {
-            let cable_present = detect_connected_pid(&[COBRA_PRO_WIRED_PID]).is_some();
+            let cable_present = wired_companion_pid
+                .map(|wired_pid| detect_connected_pid(&[wired_pid]).is_some())
+                .unwrap_or(false);
             println!("[Battery] Dongle connection, cable present: {cable_present}");
             if cable_present {
                 true

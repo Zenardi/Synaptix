@@ -18,7 +18,9 @@ pub enum RazerProductId {
     KrakenKittyV2,  // 0x0560 (Razer Kraken Kitty V2)
     KrakenV4Pro,    // 0x0568
     // Keyboards
-    BlackWidowV3Pro, // 0x025A
+    BlackWidowV3Pro,                    // 0x025A
+    BlackWidowV3MiniHyperSpeedWired,    // 0x0258
+    BlackWidowV3MiniHyperSpeedWireless, // 0x0271
     // Catch-all for devices not yet enumerated
     Unknown(u16),
 }
@@ -106,6 +108,8 @@ impl RazerProductId {
             RazerProductId::KrakenKittyV2 => 0x0560,
             RazerProductId::KrakenV4Pro => 0x0568,
             RazerProductId::BlackWidowV3Pro => 0x025A,
+            RazerProductId::BlackWidowV3MiniHyperSpeedWired => 0x0258,
+            RazerProductId::BlackWidowV3MiniHyperSpeedWireless => 0x0271,
             RazerProductId::Unknown(pid) => *pid,
         }
     }
@@ -193,6 +197,57 @@ mod tests {
         assert_eq!(charging.level(), Some(42));
         assert_eq!(discharging.level(), Some(80));
         assert_eq!(full.level(), None);
+    }
+
+    #[test]
+    fn test_usb_pid_blackwidow_v3_mini_hyperspeed_wired() {
+        assert_eq!(
+            RazerProductId::BlackWidowV3MiniHyperSpeedWired.usb_pid(),
+            0x0258,
+            "Wired PID must be 0x0258 per razerkbd_driver.h"
+        );
+    }
+
+    #[test]
+    fn test_usb_pid_blackwidow_v3_mini_hyperspeed_wireless() {
+        assert_eq!(
+            RazerProductId::BlackWidowV3MiniHyperSpeedWireless.usb_pid(),
+            0x0271,
+            "Wireless PID must be 0x0271 per razerkbd_driver.h"
+        );
+    }
+
+    #[test]
+    fn test_blackwidow_v3_mini_enum_variants_are_distinct() {
+        assert_ne!(
+            RazerProductId::BlackWidowV3MiniHyperSpeedWired,
+            RazerProductId::BlackWidowV3MiniHyperSpeedWireless
+        );
+        assert_ne!(
+            RazerProductId::BlackWidowV3MiniHyperSpeedWired.usb_pid(),
+            RazerProductId::BlackWidowV3MiniHyperSpeedWireless.usb_pid()
+        );
+    }
+
+    #[test]
+    fn test_blackwidow_v3_mini_serialization_roundtrip() {
+        let device = RazerDevice {
+            name: "Razer BlackWidow V3 Mini HyperSpeed (Wireless)".to_string(),
+            product_id: RazerProductId::BlackWidowV3MiniHyperSpeedWireless,
+            battery_state: BatteryState::Discharging(82),
+            capabilities: vec![],
+            connection_type: ConnectionType::Dongle,
+        };
+
+        let json = serde_json::to_string(&device).expect("serialization failed");
+        let restored: RazerDevice = serde_json::from_str(&json).expect("deserialization failed");
+
+        assert_eq!(
+            restored.product_id,
+            RazerProductId::BlackWidowV3MiniHyperSpeedWireless
+        );
+        assert_eq!(restored.battery_state, BatteryState::Discharging(82));
+        assert_eq!(restored.connection_type, ConnectionType::Dongle);
     }
 
     #[test]
