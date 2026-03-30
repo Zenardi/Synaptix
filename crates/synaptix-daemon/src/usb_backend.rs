@@ -277,6 +277,19 @@ pub fn send_haptic_report(product_id: u16, payload: &[u8; HAPTIC_REPORT_LEN]) ->
         return Err(rusb::Error::Io);
     }
 
+    // Log the active area of the report for protocol verification without hardware.
+    // Byte[10]=haptic_a, byte[16]=haptic_b — compare against build_haptic_report() lookup table:
+    //   Off(0):  10=0x00 16=0x00 | Low(33):  10=0x1A 16=0x3E
+    //   Med(66): 10=0x28 16=0x44 | High(100): 10=0x4E 16=0x51
+    log::debug!(
+        "[HapticReport] payload[0..45]: {}",
+        payload[..45]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+
     println!("[USB] Haptic control transfer complete.");
     Ok(())
 }
