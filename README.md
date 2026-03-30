@@ -6,7 +6,7 @@
 
 **A modern, open-source replacement for Razer Synapse on Linux.**
 
-Synaptix is a Rust-powered daemon and GUI that replaces the [`openrazer`](https://github.com/openrazer/openrazer) + Polychromatic stack with a clean, event-driven architecture built from the ground up.
+Synaptix is a Rust-powered daemon and GUI that brings first-class Razer hardware support to Linux through a clean, event-driven architecture, built from the ground up.
 
 [![Synaptix CI](https://github.com/Zenardi/Synaptix/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Zenardi/Synaptix/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/Zenardi/Synaptix?color=44d62c&label=release)](https://github.com/Zenardi/Synaptix/releases/latest)
