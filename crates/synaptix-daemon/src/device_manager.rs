@@ -9,12 +9,17 @@ use synaptix_protocol::{
 fn lighting_params(product_id: &RazerProductId) -> (u8, u8) {
     use crate::razer_protocol::{
         LED_BACKLIGHT, LED_ZERO, TRANSACTION_ID_COBRA, TRANSACTION_ID_DA,
-        TRANSACTION_ID_KEYBOARD_WIRELESS,
+        TRANSACTION_ID_KEYBOARD_WIRELESS, TRANSACTION_ID_VIPER,
     };
     match product_id {
         // Cobra Pro / Basilisk V3 Pro group: transaction_id=0x1F, ZERO_LED
         RazerProductId::CobraProWired | RazerProductId::CobraProWireless => {
             (TRANSACTION_ID_COBRA, LED_ZERO)
+        }
+        // Viper Ultimate: transaction_id=0xFF, ZERO_LED
+        // Source: razermouse_driver.c — Viper Ultimate uses txn_id 0xFF
+        RazerProductId::ViperUltimateWired | RazerProductId::ViperUltimateWireless => {
+            (TRANSACTION_ID_VIPER, LED_ZERO)
         }
         // BlackWidow V3 Mini HyperSpeed Wired: transaction_id=0x1F, BACKLIGHT_LED
         // Ref: razerkbd_driver.c ~line 2107

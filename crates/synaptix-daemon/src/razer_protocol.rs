@@ -29,6 +29,10 @@ pub const TRANSACTION_ID_DA: u8 = 0x3F;
 /// Transaction ID for Cobra Pro, Basilisk V3 Pro, and newer wireless mice.
 pub const TRANSACTION_ID_COBRA: u8 = 0x1F;
 
+/// Transaction ID for Viper Ultimate and similar wireless mice.
+/// Source: `razermouse_driver.c` — charge_level switch for Viper Ultimate PIDs.
+pub const TRANSACTION_ID_VIPER: u8 = 0xFF;
+
 /// Transaction ID for wireless keyboards (BlackWidow V3 Mini HyperSpeed Wireless, etc.).
 /// Source: `razerkbd_driver.c` — charge_level switch for `_WIRELESS` PIDs.
 pub const TRANSACTION_ID_KEYBOARD_WIRELESS: u8 = 0x9F;
@@ -50,7 +54,7 @@ pub const WAIT_NEW_RECEIVER_US: u64 = 31_000;
 
 /// Minimum sleep (µs) for Viper Ultimate, DA V2 Pro, Viper V3 Pro, and Viper receivers.
 /// Source: `RAZER_VIPER_MOUSE_RECEIVER_WAIT_MIN_US` in razermouse_driver.h
-pub const _WAIT_VIPER_RECEIVER_US: u64 = 59_900;
+pub const WAIT_VIPER_RECEIVER_US: u64 = 59_900;
 
 /// Backlight LED zone — covers the logo on DA V2 Pro and similar mice.
 pub const LED_BACKLIGHT: u8 = 0x05;

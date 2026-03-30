@@ -316,3 +316,66 @@ describe("DeviceCard: wired keyboard shows battery ring (has BatteryReporting)",
     expect(screen.getByLabelText("Battery level unknown")).toBeInTheDocument();
   });
 });
+
+// ── Viper Ultimate ──────────────────────────────────────────────────────────
+// Wireless Viper Ultimate: battery ring + DPI capability.
+// Wired Viper Ultimate: no battery ring, but DPI capability.
+
+const VIPER_ULTIMATE_WIRELESS: RazerDevice = {
+  device_id: "viper-ultimate",
+  name: "Razer Viper Ultimate (Wireless)",
+  product_id: "ViperUltimateWireless",
+  battery_state: { Discharging: 80 },
+  capabilities: ["BatteryReporting", "DpiControl", { Lighting: "Off" }],
+  connection_type: "Dongle",
+};
+
+const VIPER_ULTIMATE_WIRED: RazerDevice = {
+  device_id: "viper-ultimate",
+  name: "Razer Viper Ultimate (Wired)",
+  product_id: "ViperUltimateWired",
+  battery_state: "Unknown",
+  capabilities: ["DpiControl", { Lighting: "Off" }],
+  connection_type: "Wired",
+};
+
+describe("DeviceCard: Viper Ultimate Wireless — battery ring visible", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockResolvedValue([VIPER_ULTIMATE_WIRELESS]);
+    vi.mocked(listen).mockImplementation(() =>
+      Promise.resolve(() => { /* no-op unlisten */ }),
+    );
+  });
+
+  it("renders device name and battery percentage for wireless variant", async () => {
+    render(<MemoryRouter><App /></MemoryRouter>);
+
+    await waitFor(() =>
+      expect(screen.getByText("Razer Viper Ultimate (Wireless)")).toBeInTheDocument(),
+    );
+
+    expect(screen.getByText("80%")).toBeInTheDocument();
+    expect(screen.queryByText("?")).not.toBeInTheDocument();
+  });
+});
+
+describe("DeviceCard: Viper Ultimate Wired — no battery ring", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockResolvedValue([VIPER_ULTIMATE_WIRED]);
+    vi.mocked(listen).mockImplementation(() =>
+      Promise.resolve(() => { /* no-op unlisten */ }),
+    );
+  });
+
+  it("renders device name without battery ring for wired variant", async () => {
+    render(<MemoryRouter><App /></MemoryRouter>);
+
+    await waitFor(() =>
+      expect(screen.getByText("Razer Viper Ultimate (Wired)")).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByText("?")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Battery level unknown")).not.toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+  });
+});

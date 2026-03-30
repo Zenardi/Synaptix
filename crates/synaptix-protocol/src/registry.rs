@@ -444,13 +444,13 @@ pub fn get_device_profile(product_id: u16) -> Option<DeviceProfile> {
             "Razer Viper Ultimate (Wired)",
             DeviceType::Mouse,
             false,
-            false,
+            true, // DPI supported via USB cable
         ),
         0x007B => (
             "Razer Viper Ultimate (Wireless)",
             DeviceType::Mouse,
-            true,
-            false,
+            true, // wireless — reports battery via dongle
+            true, // DPI supported
         ),
         0x00A5 => (
             "Razer Viper V2 Pro (Wired)",
@@ -1472,5 +1472,47 @@ mod tests {
             );
             assert_eq!(profile.control_interface, 0);
         }
+    }
+
+    // ── Viper Ultimate TDD tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_viper_ultimate_wired_has_dpi_no_battery() {
+        let profile =
+            get_device_profile(0x007A).expect("Viper Ultimate (Wired) must be in registry");
+        assert_eq!(profile.name, "Razer Viper Ultimate (Wired)");
+        assert_eq!(profile.device_type, DeviceType::Mouse);
+        assert_eq!(profile.product_id, 0x007A);
+        assert_eq!(profile.control_interface, 0);
+        assert!(
+            profile.capabilities.contains(&DeviceCapability::DpiControl),
+            "Viper Ultimate Wired must advertise DpiControl"
+        );
+        assert!(
+            !profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Viper Ultimate Wired (USB cable) must NOT advertise BatteryReporting"
+        );
+    }
+
+    #[test]
+    fn test_viper_ultimate_wireless_has_battery_and_dpi() {
+        let profile =
+            get_device_profile(0x007B).expect("Viper Ultimate (Wireless) must be in registry");
+        assert_eq!(profile.name, "Razer Viper Ultimate (Wireless)");
+        assert_eq!(profile.device_type, DeviceType::Mouse);
+        assert_eq!(profile.product_id, 0x007B);
+        assert_eq!(profile.control_interface, 0);
+        assert!(
+            profile
+                .capabilities
+                .contains(&DeviceCapability::BatteryReporting),
+            "Viper Ultimate Wireless must advertise BatteryReporting"
+        );
+        assert!(
+            profile.capabilities.contains(&DeviceCapability::DpiControl),
+            "Viper Ultimate Wireless must advertise DpiControl"
+        );
     }
 }
