@@ -218,7 +218,70 @@ describe("DeviceCard: Unknown battery state (headset)", () => {
   });
 });
 
-// ── Wired keyboard: no battery ───────────────────────────────────────────────
+// ── Mousepad and Accessory: no battery ring ──────────────────────────────────
+// Mousepad and Accessory devices only have Lighting capability.
+// They must NOT render the battery ring.
+
+const MOUSEPAD_DEVICE: RazerDevice = {
+  device_id: "firefly-v2",
+  name: "Razer Firefly V2",
+  product_id: "FireflyV2",
+  battery_state: "Unknown",
+  capabilities: [{ Lighting: "Off" }],
+  connection_type: "Wired",
+};
+
+const ACCESSORY_DEVICE: RazerDevice = {
+  device_id: "chroma-mug",
+  name: "Razer Chroma Mug Holder",
+  product_id: "ChromaMugHolder",
+  battery_state: "Unknown",
+  capabilities: [{ Lighting: "Off" }],
+  connection_type: "Wired",
+};
+
+describe("DeviceCard: Mousepad — no battery ring", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockResolvedValue([MOUSEPAD_DEVICE]);
+    vi.mocked(listen).mockImplementation(() =>
+      Promise.resolve(() => { /* no-op unlisten */ }),
+    );
+  });
+
+  it("renders mousepad name without battery ring or ? placeholder", async () => {
+    render(<MemoryRouter><App /></MemoryRouter>);
+
+    await waitFor(() =>
+      expect(screen.getByText("Razer Firefly V2")).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByText("?")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Battery level unknown")).not.toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+  });
+});
+
+describe("DeviceCard: Accessory — no battery ring", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockResolvedValue([ACCESSORY_DEVICE]);
+    vi.mocked(listen).mockImplementation(() =>
+      Promise.resolve(() => { /* no-op unlisten */ }),
+    );
+  });
+
+  it("renders accessory name without battery ring or ? placeholder", async () => {
+    render(<MemoryRouter><App /></MemoryRouter>);
+
+    await waitFor(() =>
+      expect(screen.getByText("Razer Chroma Mug Holder")).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByText("?")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Battery level unknown")).not.toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+  });
+});
+
 // A device without the BatteryReporting capability must NOT render the
 // battery ring at all — not even a "?" placeholder.
 
@@ -227,11 +290,11 @@ const WIRED_KEYBOARD: RazerDevice = {
   name: "Razer BlackWidow V3 Mini HyperSpeed (Wired)",
   product_id: "BlackWidowV3MiniHyperSpeedWired",
   battery_state: "Unknown",
-  capabilities: [{ Lighting: "Off" }],  // no BatteryReporting
+  capabilities: ["BatteryReporting", { Lighting: "Off" }],  // wired keyboard HAS BatteryReporting
   connection_type: "Wired",
 };
 
-describe("DeviceCard: no battery ring for wired keyboard (no BatteryReporting)", () => {
+describe("DeviceCard: wired keyboard shows battery ring (has BatteryReporting)", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockResolvedValue([WIRED_KEYBOARD]);
     vi.mocked(listen).mockImplementation(() =>
@@ -239,18 +302,17 @@ describe("DeviceCard: no battery ring for wired keyboard (no BatteryReporting)",
     );
   });
 
-  it("does not render a battery ring or ? for a device without BatteryReporting", async () => {
+  it("renders battery ring with ? when wired keyboard battery is Unknown", async () => {
     render(<MemoryRouter><App /></MemoryRouter>);
 
     await waitFor(() =>
       expect(screen.getByText("Razer BlackWidow V3 Mini HyperSpeed (Wired)")).toBeInTheDocument(),
     );
 
-    // No "?" and no percentage — the ring should be completely absent
-    expect(screen.queryByText("?")).not.toBeInTheDocument();
-    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
+    // Wired keyboard has BatteryReporting — ring must show with ? while Unknown
+    expect(screen.getByText("?")).toBeInTheDocument();
 
-    // No battery aria-label should be present
-    expect(screen.queryByLabelText(/battery/i)).not.toBeInTheDocument();
+    // Battery aria-label must be present for accessibility
+    expect(screen.getByLabelText("Battery level unknown")).toBeInTheDocument();
   });
 });

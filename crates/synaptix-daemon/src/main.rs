@@ -18,9 +18,11 @@ const COBRA_PRO_PIDS: &[(u16, ConnectionType)] = &[
 
 // PIDs for the BlackWidow V3 Mini HyperSpeed.
 // Wireless (dongle) is preferred when both are present.
+// The wired variant (0x0258) is the keyboard charging via USB cable — it
+// still has an internal battery and can report its level + charging state.
 const BLACKWIDOW_V3_MINI_PIDS: &[(u16, ConnectionType)] = &[
     (0x0271, ConnectionType::Dongle), // HyperSpeed dongle (wireless)
-    (0x0258, ConnectionType::Wired),  // USB cable (wired mode, no battery)
+    (0x0258, ConnectionType::Wired),  // USB cable (wired/charging mode)
 ];
 
 /// Probe USB for the first Cobra Pro PID that is currently attached and
@@ -241,7 +243,12 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         .await
         .unwrap_or(None);
 
-    let keyboard_wireless_pid: Option<u16> =
+    // Battery config for whichever keyboard variant is connected.
+    // Both variants have an internal battery:
+    //   - Dongle (0x0271): wireless gaming, txn_id=0x9F, wired companion=0x0258
+    //   - Wired  (0x0258): charging via USB cable, txn_id=0x1F, no companion needed
+    // `None` means no keyboard was detected.
+    let keyboard_battery_cfg: Option<(u16, u8, ConnectionType, Option<u16>)> =
         if let Some((pid, product_id, conn_type, name)) = &detected_keyboard {
             let pid = *pid;
             if let Some(profile) = get_device_profile(pid) {
@@ -263,12 +270,15 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                     },
                 );
 
-                // Only the wireless variant (dongle) needs battery polling.
-                if matches!(conn_type, ConnectionType::Dongle) {
-                    Some(pid)
+                let (txn_id, companion) = if matches!(conn_type, ConnectionType::Dongle) {
+                    (
+                        razer_protocol::TRANSACTION_ID_KEYBOARD_WIRELESS,
+                        Some(usb_backend::BLACKWIDOW_V3_MINI_WIRED_PID),
+                    )
                 } else {
-                    None
-                }
+                    (razer_protocol::TRANSACTION_ID_COBRA, None)
+                };
+                Some((pid, txn_id, conn_type.clone(), companion))
             } else {
                 None
             }
@@ -276,25 +286,29 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
             None
         };
 
-    // Initial battery query for the wireless keyboard (mirrors the Cobra Pro startup pattern).
-    // Queries real battery state before D-Bus registration so the DeviceManager holds real data
-    // immediately, the tray shows the keyboard's battery on first render, and the UI avoids
-    // a "?" flash while waiting for the first polling-loop tick (60 s away).
-    if let Some(kbd_pid) = keyboard_wireless_pid {
+    // Initial battery query for the keyboard (mirrors the Cobra Pro startup pattern).
+    // Runs before D-Bus registration so the DeviceManager holds real data immediately,
+    // the tray shows the battery on first render, and the UI avoids a '?' flash.
+    if let Some((kbd_pid, kbd_txn, kbd_conn_type, kbd_companion)) = &keyboard_battery_cfg {
+        let kbd_pid = *kbd_pid;
+        let kbd_txn = *kbd_txn;
+        let kbd_conn_type = kbd_conn_type.clone();
+        let kbd_companion = *kbd_companion;
         let kbd_name = detected_keyboard
             .as_ref()
             .map(|(_, _, _, n)| n.clone())
-            .unwrap_or_else(|| "Razer BlackWidow V3 Mini HyperSpeed (Wireless)".to_string());
+            .unwrap_or_else(|| "Razer BlackWidow V3 Mini HyperSpeed".to_string());
 
         let mut attempt = 0u8;
         let initial_kbd_battery = loop {
+            let ct = kbd_conn_type.clone();
             let result = tokio::task::spawn_blocking(move || {
                 usb_backend::query_battery(
                     kbd_pid,
-                    razer_protocol::TRANSACTION_ID_KEYBOARD_WIRELESS,
+                    kbd_txn,
                     razer_protocol::WAIT_NEW_RECEIVER_US,
-                    &ConnectionType::Dongle,
-                    Some(usb_backend::BLACKWIDOW_V3_MINI_WIRED_PID),
+                    &ct,
+                    kbd_companion,
                 )
             })
             .await
@@ -324,7 +338,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
         // Update DeviceManager with the real state before D-Bus is registered.
         manager.update_battery("blackwidow-v3-mini", initial_kbd_battery.clone());
 
-        // Always push to tray so the keyboard appears in the menu from startup.
+        // Push to tray so the keyboard appears in the menu from startup.
         let (pct, is_charging) = battery_to_pct(&initial_kbd_battery);
         tx.send(TrayUpdate {
             device_id: "blackwidow-v3-mini".to_string(),
@@ -438,28 +452,30 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     }
 
     // ── BlackWidow V3 Mini HyperSpeed battery polling (every 60 s) ───────────
-    // Only started for the wireless (dongle) variant (PID 0x0271), which carries
-    // a battery. The wired variant (0x0258) has no battery and is skipped.
-    if let Some(kbd_pid) = keyboard_wireless_pid {
+    // Battery polling loop for the BlackWidow V3 Mini HyperSpeed.
+    // Runs for both wired (charging via USB cable) and wireless (dongle) variants —
+    // both have an internal battery that can report level and charging state.
+    if let Some((kbd_pid, kbd_txn, kbd_conn_type, kbd_companion)) = keyboard_battery_cfg {
         let kbd_conn = conn.clone();
         let kbd_tx = tx.clone();
         let kbd_display_name = detected_keyboard
             .as_ref()
             .map(|(_, _, _, n)| n.clone())
-            .unwrap_or_else(|| "Razer BlackWidow V3 Mini HyperSpeed (Wireless)".to_string());
+            .unwrap_or_else(|| "Razer BlackWidow V3 Mini HyperSpeed".to_string());
 
         tokio::spawn(async move {
             // Allow D-Bus interface to settle before first poll.
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
             loop {
+                let ct = kbd_conn_type.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     usb_backend::query_battery(
                         kbd_pid,
-                        razer_protocol::TRANSACTION_ID_KEYBOARD_WIRELESS,
+                        kbd_txn,
                         razer_protocol::WAIT_NEW_RECEIVER_US,
-                        &ConnectionType::Dongle,
-                        Some(usb_backend::BLACKWIDOW_V3_MINI_WIRED_PID),
+                        &ct,
+                        kbd_companion,
                     )
                 })
                 .await
@@ -503,7 +519,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                     log::warn!("[KeyboardBatt] Battery query failed for PID=0x{kbd_pid:04x} — device may be off or out of range.");
                 }
 
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             }
         });
     }
