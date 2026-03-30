@@ -541,7 +541,10 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                             .flatten();
 
                     let Some(pct) = pct_opt else { continue };
-                    let new_state = BatteryState::Discharging(pct);
+                    // The Kraken V4 Pro is always USB-connected (no wireless battery drain
+                    // path while communicating via USB), so any successful query means the
+                    // headset is receiving power — report as Charging.
+                    let new_state = BatteryState::Charging(pct);
 
                     let Ok(iface_ref) = headset_conn
                         .object_server()

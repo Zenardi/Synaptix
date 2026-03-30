@@ -628,6 +628,82 @@ pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
     buf
 }
 
+/// Builds a single Interface-2 audio-stream sub-packet (90 bytes).
+///
+/// **Wireshark ground truth (`haptics_synapse.pcapng`, pkt 27):**
+/// ```text
+/// wVal=0x0300, wIdx=2, cmd_class=0x03, cmd_id=0x0b
+/// [00] 00 0f 00 00 00 34 03 0b ff 00 00 0f 00 00 00 09
+/// [16] ba ff 09 ba ff … (15 triplets)
+/// [88] 0x80 (checksum), [89] 0x00
+/// ```
+///
+/// Each frame consists of 6 sub-packets (sub_ctr 0–5) followed by one end-of-frame packet.
+///
+/// # Arguments
+/// * `tx_id`    — monotonic transaction counter (wraps at 255)
+/// * `sub_ctr`  — sub-packet index within a frame (0–5)
+/// * `frame_id` — frame identifier (tx_id of the first sub-packet in the frame)
+pub fn build_haptic_audio_packet(tx_id: u8, sub_ctr: u8, frame_id: u8) -> [u8; 90] {
+    let mut buf = [0u8; 90];
+    buf[0] = 0x00; // status
+    buf[1] = tx_id;
+    buf[5] = 0x34; // data_len = 52
+    buf[6] = 0x03; // cmd_class
+    buf[7] = 0x0b; // cmd_id (audio frame)
+    buf[8] = 0xff; // control flag = audio data
+    buf[9] = sub_ctr;
+    buf[11] = frame_id;
+
+    // Audio data: 15 triplets of `09 ba ff` in bytes[15:60].
+    // This pattern is the Wireshark-captured haptic audio signal and produces
+    // a consistent mid-frequency haptic vibration.
+    let mut offset = 15usize;
+    while offset + 2 < 60 {
+        buf[offset] = 0x09;
+        buf[offset + 1] = 0xba;
+        buf[offset + 2] = 0xff;
+        offset += 3;
+    }
+
+    // Checksum at byte[88] = XOR of bytes[2:88].
+    let mut cs: u8 = 0;
+    for b in &buf[2..88] {
+        cs ^= b;
+    }
+    buf[88] = cs;
+
+    buf
+}
+
+/// Builds a single Interface-2 end-of-frame notification packet (90 bytes).
+///
+/// **Wireshark ground truth (`haptics_synapse.pcapng`, pkt 39):**
+/// ```text
+/// [00] 00 15 00 00 00 02 03 0a 05 00 …
+/// [88] 0x0e (checksum = 0x02^0x03^0x0a^0x05), [89] 0x00
+/// ```
+///
+/// Sent after every group of 6 audio sub-packets to signal frame completion.
+pub fn build_haptic_audio_end_frame(tx_id: u8) -> [u8; 90] {
+    let mut buf = [0u8; 90];
+    buf[0] = 0x00; // status
+    buf[1] = tx_id;
+    buf[5] = 0x02; // data_len = 2
+    buf[6] = 0x03; // cmd_class
+    buf[7] = 0x0a; // cmd_id (end-of-frame, differs from 0x0b)
+    buf[8] = 0x05; // control flag
+
+    // Checksum at byte[88] = XOR of bytes[2:88].
+    let mut cs: u8 = 0;
+    for b in &buf[2..88] {
+        cs ^= b;
+    }
+    buf[88] = cs;
+
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1290,5 +1366,93 @@ mod tests {
             None,
             "all-zero packet must be rejected"
         );
+    }
+
+    // ── Interface 2 audio-stream packet tests ─────────────────────────────────
+    //
+    // Wireshark ground truth: `haptics_synapse.pcapng` pkt 27.
+    // Interface 2: wVal=0x0300, wIdx=2, 90-byte payload, cmd_class=0x03, cmd_id=0x0b.
+    //
+    // Pkt 27 full payload:
+    //   [00] 00 0f 00 00 00 34 03 0b ff 00 00 0f 00 00 00 09
+    //   [16] ba ff 09 ba ff ... (15 triplets of 09 ba ff)
+    //   [80] 00 00 00 00 00 00 00 00 80 00
+    //
+    // Checksum: XOR(bytes[2:88]) = 0x80 (placed at byte[88]).
+
+    /// Verifies header fields for audio frame packet (Wireshark pkt 27 ground truth).
+    #[test]
+    fn test_build_haptic_audio_packet_header_fields() {
+        let pkt = build_haptic_audio_packet(0x0f, 0, 0x0f);
+        assert_eq!(pkt[0], 0x00, "byte[0] status must be 0x00");
+        assert_eq!(pkt[1], 0x0f, "byte[1] tx_id must match input");
+        assert_eq!(pkt[5], 0x34, "byte[5] data_len must be 52");
+        assert_eq!(pkt[6], 0x03, "byte[6] cmd_class must be 0x03");
+        assert_eq!(pkt[7], 0x0b, "byte[7] cmd_id must be 0x0b");
+        assert_eq!(pkt[8], 0xff, "byte[8] control flag must be 0xff");
+        assert_eq!(pkt[9], 0x00, "byte[9] sub_ctr must match input (0)");
+        assert_eq!(pkt[11], 0x0f, "byte[11] frame_id must match input");
+        assert_eq!(pkt[89], 0x00, "byte[89] must be 0x00");
+    }
+
+    /// Verifies audio payload and checksum for pkt 27 (tx_id=0x0f, sub_ctr=0, frame_id=0x0f).
+    #[test]
+    fn test_build_haptic_audio_packet_audio_data_and_checksum() {
+        let pkt = build_haptic_audio_packet(0x0f, 0, 0x0f);
+        // 15 triplets of `09 ba ff` in bytes[15:60]
+        for i in 0..15usize {
+            let base = 15 + i * 3;
+            assert_eq!(pkt[base], 0x09, "triplet {i} byte 0 must be 0x09");
+            assert_eq!(pkt[base + 1], 0xba, "triplet {i} byte 1 must be 0xba");
+            assert_eq!(pkt[base + 2], 0xff, "triplet {i} byte 2 must be 0xff");
+        }
+        // Padding bytes[60:88] must be zero
+        for (i, &b) in pkt.iter().enumerate().take(88).skip(60) {
+            assert_eq!(b, 0x00, "padding byte[{i}] must be 0x00");
+        }
+        // Checksum at byte[88] = XOR(bytes[2:88]) = 0x80 (Wireshark-verified)
+        assert_eq!(
+            pkt[88], 0x80,
+            "checksum at byte[88] must be 0x80 (Wireshark pkt 27)"
+        );
+    }
+
+    /// Sub-counter is placed at byte[9]; different values must be reflected.
+    #[test]
+    fn test_build_haptic_audio_packet_sub_counter_varies() {
+        for sub in 0u8..6 {
+            let pkt = build_haptic_audio_packet(0, sub, 0);
+            assert_eq!(pkt[9], sub, "byte[9] sub_ctr must equal input {sub}");
+        }
+    }
+
+    // ── End-of-frame packet tests ─────────────────────────────────────────────
+    //
+    // Wireshark pkt 39 full payload:
+    //   [00] 00 15 00 00 00 02 03 0a 05 00 00 00 ... (all zeros except listed)
+    //   [80] 00 00 00 00 00 00 00 00 0e 00
+    //
+    // Checksum = 0x02 ^ 0x03 ^ 0x0a ^ 0x05 = 0x0e.
+
+    /// Verifies end-of-frame packet fields (Wireshark pkt 39 ground truth).
+    #[test]
+    fn test_build_haptic_audio_end_frame_fields() {
+        let pkt = build_haptic_audio_end_frame(0x15);
+        assert_eq!(pkt[0], 0x00, "byte[0] status must be 0x00");
+        assert_eq!(pkt[1], 0x15, "byte[1] tx_id must match input (0x15=21)");
+        assert_eq!(pkt[5], 0x02, "byte[5] data_len must be 2");
+        assert_eq!(pkt[6], 0x03, "byte[6] cmd_class must be 0x03");
+        assert_eq!(pkt[7], 0x0a, "byte[7] cmd_id must be 0x0a (end-of-frame)");
+        assert_eq!(pkt[8], 0x05, "byte[8] control flag must be 0x05");
+        // bytes[9:88] all zero
+        for (i, &b) in pkt.iter().enumerate().take(88).skip(9) {
+            assert_eq!(b, 0x00, "byte[{i}] must be 0x00 in end-of-frame");
+        }
+        // Checksum at byte[88] = 0x02 ^ 0x03 ^ 0x0a ^ 0x05 = 0x0e (Wireshark-verified)
+        assert_eq!(
+            pkt[88], 0x0e,
+            "checksum at byte[88] must be 0x0e (Wireshark pkt 39)"
+        );
+        assert_eq!(pkt[89], 0x00, "byte[89] must be 0x00");
     }
 }

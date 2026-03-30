@@ -390,9 +390,19 @@ impl DeviceManager {
         let result = tokio::task::spawn_blocking(move || {
             if pid == 0x0568 {
                 // Kraken V4 Pro OLED Hub: 64-byte proprietary HID report on
-                // Interface 4, wValue=0x0202. Wireshark-verified protocol path.
+                // Interface 4, wValue=0x0202. Sets haptic sensitivity/amplification.
                 let payload = crate::razer_protocol::build_haptic_report(clamped);
-                crate::usb_backend::send_haptic_report(pid, &payload)
+                let sensitivity_result = crate::usb_backend::send_haptic_report(pid, &payload);
+
+                // Also send an audio-stream burst on Interface 2 so the haptic
+                // motor has a signal to convert into vibration.  This is a
+                // best-effort operation: the sensitivity command above is the
+                // authoritative result even if the burst fails.
+                if sensitivity_result.is_ok() && clamped > 0 {
+                    crate::usb_backend::send_haptic_audio_burst(pid);
+                }
+
+                sensitivity_result
             } else {
                 // Legacy 90-byte Razer protocol for Kraken V3 HyperSense and
                 // other HapticFeedback-capable headsets.
