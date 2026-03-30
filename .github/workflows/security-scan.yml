@@ -34,6 +34,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      # ── Trivy DB cache (node24-native, replaces trivy-action's internal node20 cache) ──
+      - name: Get date for Trivy cache key
+        id: trivy-date
+        run: echo "date=$(date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Trivy vulnerability database from cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ steps.trivy-date.outputs.date }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
       - name: Run Trivy vulnerability scan
         uses: aquasecurity/trivy-action@v0.35.0
         with:
@@ -50,6 +62,8 @@ jobs:
           limit-severities-for-sarif: true
           # Fails the CI build — blocks the PR from merging.
           exit-code: '1'
+          # Disable trivy-action's internal node20 cache; we use actions/cache@v5 above.
+          cache: false
 
       - name: Upload SARIF to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
