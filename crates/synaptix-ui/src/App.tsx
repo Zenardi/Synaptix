@@ -1,9 +1,10 @@
-import { createContext, useEffect, useState } from "react";
+import { createContext, useCallback, useEffect, useState } from "react";
 import { Routes, Route } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Titlebar from "./Titlebar";
 import DeviceCard from "./components/DeviceCard";
+import DaemonUnavailableScreen from "./components/DaemonUnavailableScreen";
 import DeviceDetail from "./pages/DeviceDetail";
 
 // Mirror of the Rust BatteryState enum after serde serialisation.
@@ -68,6 +69,14 @@ export function hasCapability(
   );
 }
 
+/** Returns true for D-Bus ServiceUnknown errors — daemon not yet started. */
+export function isServiceUnknownError(error: string): boolean {
+  return (
+    error.includes("ServiceUnknown") ||
+    error.includes("name was not provided by any")
+  );
+}
+
 // ── Devices context ──────────────────────────────────────────────────────────
 // Shared across Dashboard and DeviceDetail so we don't re-fetch on navigation.
 
@@ -87,12 +96,19 @@ function App() {
   const [devices, setDevices] = useState<RazerDevice[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Initial load
-  useEffect(() => {
+  const fetchDevices = useCallback(() => {
     invoke<RazerDevice[]>("get_razer_devices")
-      .then(setDevices)
+      .then((devs) => {
+        setDevices(devs);
+        setError(null);
+      })
       .catch((err: unknown) => setError(String(err)));
   }, []);
+
+  // Initial load
+  useEffect(() => {
+    fetchDevices();
+  }, [fetchDevices]);
 
   // Real-time battery updates via D-Bus signal → Tauri event bridge
   useEffect(() => {
@@ -147,11 +163,13 @@ function App() {
                   Device Manager
                 </p>
 
-                {error && (
+                {error && isServiceUnknownError(error) ? (
+                  <DaemonUnavailableScreen onRetry={fetchDevices} />
+                ) : error ? (
                   <div className="text-red-400 text-sm mb-4 bg-red-900/20 p-3 rounded-md border border-red-900/40">
                     Daemon unavailable: {error}
                   </div>
-                )}
+                ) : null}
 
                 {devices.length === 0 && !error && (
                   <p className="text-gray-600 text-sm">No devices connected.</p>
