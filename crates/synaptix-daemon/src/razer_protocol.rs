@@ -560,16 +560,15 @@ pub fn parse_headset_push_packet(resp: &[u8; HAPTIC_REPORT_LEN]) -> Option<u8> {
 /// Bytes 20–23 = 0x00
 /// Byte 24     = 0x04  (field marker)
 /// Byte 25     = 0x00
-/// Byte 26     = 0x3A  (fixed per-session value; narrow observed range 57–58)
+/// Byte 26     = 0x39  (fixed per-session value; Wireshark-verified)
 /// Bytes 27–28 = 0x00
 /// Byte 29     = 0x05  (field marker)
-/// Bytes 30–32 = 0x00
-/// Byte 33     = 0x06  (field marker)
-/// Bytes 34–37 = 0x00
-/// Byte 38     = 0x07  (field marker)
-/// Byte 39     = 0x09  (fixed)
+/// Bytes 30–33 = 0x00
+/// Byte 34     = 0x06  (field marker)
+/// Bytes 35–38 = 0x00
+/// Byte 39     = 0x07  (field marker)
 /// Byte 40     = 0x09  (fixed)
-/// Byte 41     = 0x00  (per-session; observed 0x10–0x20 across captures)
+/// Byte 41     = 0x20  (fixed; Wireshark-verified)
 /// Byte 42     counter        — increments by 1 each send (AtomicU8, wraps 255→0)
 /// Byte 43     = 0x01  (fixed)
 /// Byte 44     = 0x08  (fixed)
@@ -594,12 +593,19 @@ pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
     buf[7] = 0x17; // cmd_id
 
     // ── Intensity ─────────────────────────────────────────────────────────────
+    // Wireshark-verified lookup table (haptics_synapse.pcapng, packet #329 et al.):
+    //   Off  (0):   haptic_a=0,  haptic_b=0
+    //   Low  (33):  haptic_a=26, haptic_b=62
+    //   Med  (66):  haptic_a=40, haptic_b=68
+    //   High (100): haptic_a=78, haptic_b=81
     let (haptic_a, haptic_b): (u8, u8) = if level == 0 {
         (0, 0)
+    } else if level <= 33 {
+        (26, 62)
+    } else if level <= 66 {
+        (40, 68)
     } else {
-        let a = (u16::from(level) * 78 / 100) as u8;
-        let b = (60u16 + u16::from(level) * 21 / 100) as u8;
-        (a.max(1), b)
+        (78, 81)
     };
 
     buf[8] = 0x09;
@@ -609,12 +615,12 @@ pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
     buf[16] = haptic_b;
     buf[19] = 0x03;
     buf[24] = 0x04;
-    buf[26] = 0x3A; // per-session fixed value
+    buf[26] = 0x39; // Wireshark-verified fixed value (haptics_synapse.pcapng)
     buf[29] = 0x05;
-    buf[33] = 0x06;
-    buf[38] = 0x07;
-    buf[39] = 0x09;
+    buf[34] = 0x06; // ← offset confirmed from pcapng row [32]: 00 00 06 ...
+    buf[39] = 0x07; // ← offset confirmed from pcapng row [32]: ... 00 07 09 20 ...
     buf[40] = 0x09;
+    buf[41] = 0x20; // ← Wireshark-verified (was 0x09 at wrong position)
     buf[42] = HAPTIC_COUNTER.fetch_add(1, Ordering::Relaxed);
     buf[43] = 0x01;
     buf[44] = 0x08;
@@ -1105,7 +1111,14 @@ mod tests {
 
     // ── Kraken V4 Pro OLED Hub — 64-byte haptic report ───────────────────────
 
-    /// Verify Wireshark-verified fixed bytes and intensity mapping for level=66.
+    /// Verify Wireshark-verified fixed bytes for the 64-byte Kraken V4 Pro haptic
+    /// report. Byte positions and values confirmed against `haptics_synapse.pcapng`
+    /// captured with Razer Synapse on Windows (packet #329, HIGH level).
+    ///
+    /// Ground-truth layout (from pcapng):
+    ///   [00] 02 00 60 00 00 00 28 17 09 01 4e 00 00 00 02 00
+    ///   [16] 51 00 00 03 00 00 00 00 04 00 39 00 00 05 00 00
+    ///   [32] 00 00 06 00 00 00 00 07 09 20 09 01 08 00 00 00
     #[test]
     fn test_haptic_report_v4_pro_layout() {
         let report = build_haptic_report(66);
@@ -1120,40 +1133,55 @@ mod tests {
         assert_eq!(report[14], 0x02, "field marker byte[14] must be 0x02");
         assert_eq!(report[19], 0x03, "field marker byte[19] must be 0x03");
         assert_eq!(report[24], 0x04, "field marker byte[24] must be 0x04");
+        assert_eq!(
+            report[26], 0x39,
+            "fixed byte[26] must be 0x39 (Wireshark-verified)"
+        );
         assert_eq!(report[29], 0x05, "field marker byte[29] must be 0x05");
-        assert_eq!(report[33], 0x06, "field marker byte[33] must be 0x06");
-        assert_eq!(report[38], 0x07, "field marker byte[38] must be 0x07");
-        assert_eq!(report[39], 0x09, "fixed byte[39] must be 0x09");
+        assert_eq!(report[33], 0x00, "byte[33] must be 0x00 (not a marker)");
+        assert_eq!(report[34], 0x06, "field marker byte[34] must be 0x06");
+        assert_eq!(report[38], 0x00, "byte[38] must be 0x00 (not a marker)");
+        assert_eq!(report[39], 0x07, "field marker byte[39] must be 0x07");
         assert_eq!(report[40], 0x09, "fixed byte[40] must be 0x09");
+        assert_eq!(
+            report[41], 0x20,
+            "fixed byte[41] must be 0x20 (Wireshark-verified)"
+        );
         assert_eq!(report[43], 0x01, "fixed byte[43] must be 0x01");
         assert_eq!(report[44], 0x08, "fixed byte[44] must be 0x08");
 
-        // Level 66 → haptic_a = 66*78/100 = 51, haptic_b = 60 + 66*21/100 = 73
-        assert_eq!(report[10], 51, "haptic_a for level=66");
-        assert_eq!(report[16], 73, "haptic_b for level=66");
+        // Level 66 (Medium) → Wireshark-verified: haptic_a=40, haptic_b=68
+        assert_eq!(report[10], 40, "haptic_a for level=66 (Medium)");
+        assert_eq!(report[16], 68, "haptic_b for level=66 (Medium)");
 
         // No checksum — trailing bytes must all be zero
         assert_eq!(report[62], 0x00, "no checksum: byte[62] must be 0x00");
         assert_eq!(report[63], 0x00, "padding: byte[63] must be 0x00");
     }
 
-    /// Intensity 0 must zero out haptic_a and haptic_b.
+    /// Level 0 (Off) must zero out haptic_a and haptic_b.
     #[test]
     fn test_haptic_report_v4_pro_disable() {
         let report = build_haptic_report(0);
         assert_eq!(report[10], 0x00, "haptic_a must be 0x00 when disabled");
         assert_eq!(report[16], 0x00, "haptic_b must be 0x00 when disabled");
-        // All padding bytes should remain zero
         assert_eq!(report[62], 0x00, "no checksum: byte[62] must be 0x00");
     }
 
-    /// Level 100 produces the maximum observed byte values.
+    /// Level 33 (Low) — Wireshark-verified values from haptics_synapse.pcapng.
+    #[test]
+    fn test_haptic_report_v4_pro_low_intensity() {
+        let report = build_haptic_report(33);
+        assert_eq!(report[10], 26, "haptic_a for level=33 (Low)");
+        assert_eq!(report[16], 62, "haptic_b for level=33 (Low)");
+    }
+
+    /// Level 100 (High) — Wireshark-verified: haptic_a=78, haptic_b=81 (packet #329).
     #[test]
     fn test_haptic_report_v4_pro_max_intensity() {
         let report = build_haptic_report(100);
-        // haptic_a = 100*78/100 = 78, haptic_b = 60 + 100*21/100 = 81
-        assert_eq!(report[10], 78, "haptic_a at max level");
-        assert_eq!(report[16], 81, "haptic_b at max level");
+        assert_eq!(report[10], 78, "haptic_a at max level (High)");
+        assert_eq!(report[16], 81, "haptic_b at max level (High)");
     }
 
     // ── Kraken V4 Pro headset HID battery packet tests ────────────────────────
