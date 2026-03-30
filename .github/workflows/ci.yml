@@ -21,6 +21,7 @@ on:
 # to create tags and releases.
 permissions:
   contents: write
+  security-events: write
 
 # Opt into Node.js 24 for all GitHub Actions runners in this workflow,
 # silencing the Node.js 20 deprecation warning on checkout, upload-artifact, etc.
@@ -36,6 +37,47 @@ jobs:
       # ── Checkout ────────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # ── Security scan: Rust dependencies ─────────────────────────────────────
+      - name: Trivy scan — Rust (Cargo.lock)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: Cargo.lock
+          scanners: vuln
+          format: sarif
+          output: trivy-cargo.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF — Rust
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-cargo.sarif
+          category: trivy-cargo
+
+      # ── Security scan: Node.js dependencies ──────────────────────────────────
+      - name: Trivy scan — Node.js (synaptix-ui)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: crates/synaptix-ui
+          scanners: vuln
+          format: sarif
+          output: trivy-npm.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF — Node.js
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-npm.sarif
+          category: trivy-npm
+
 
       # ── System dependencies (Tauri + D-Bus + USB) ────────────────────────────
       - name: Install system dependencies
