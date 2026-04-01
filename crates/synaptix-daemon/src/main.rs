@@ -512,6 +512,19 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
     if !detected_headsets.is_empty() {
         let headset_conn = conn.clone();
         let headset_tx = tx.clone();
+
+        // Clone the haptic-level Arc so the polling loop uses the current level
+        // as the battery trigger instead of always sending level=0 (which would
+        // reset haptics to OFF every 5 seconds).
+        let kraken_haptic_arc = {
+            let iface = conn
+                .object_server()
+                .interface::<_, DeviceManager>("/org/synaptix/Daemon")
+                .await
+                .expect("DeviceManager not registered");
+            let guard = iface.get().await;
+            guard.kraken_v4_haptic_level.clone()
+        };
         let headset_pids: Vec<(u16, String, String)> = detected_headsets
             .iter()
             .map(|(pid, prod_id)| {
@@ -533,18 +546,22 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                     let pid = *pid;
                     let device_id = device_id.clone();
                     let display_name = display_name.clone();
+                    let haptic_level = kraken_haptic_arc.load(std::sync::atomic::Ordering::Relaxed);
 
-                    let pct_opt =
-                        tokio::task::spawn_blocking(move || usb_backend::poll_headset_battery(pid))
-                            .await
-                            .ok()
-                            .flatten();
+                    let pct_opt = tokio::task::spawn_blocking(move || {
+                        usb_backend::poll_headset_battery(pid, haptic_level)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
 
                     let Some(pct) = pct_opt else { continue };
-                    // The Kraken V4 Pro is always USB-connected (no wireless battery drain
-                    // path while communicating via USB), so any successful query means the
-                    // headset is receiving power — report as Charging.
-                    let new_state = BatteryState::Charging(pct);
+                    // The Kraken V4 Pro is a WIRELESS headset. PID 0x0568 is the OLED
+                    // Control Hub (a USB dongle). The headset connects wirelessly to the
+                    // hub — USB ≠ charging the headset battery. Always report Discharging
+                    // unless we detect a charging byte in the protocol (none found in 78
+                    // Wireshark captures: all bytes beyond [2] are zero or constant).
+                    let new_state = BatteryState::Discharging(pct);
 
                     let Ok(iface_ref) = headset_conn
                         .object_server()
@@ -576,7 +593,7 @@ async fn run_daemon(tx: std::sync::mpsc::Sender<TrayUpdate>) {
                             device_id: device_id.clone(),
                             device_name: display_name,
                             percentage: pct,
-                            is_charging: false,
+                            is_charging: false, // hub USB ≠ charging; headset is wireless
                         })
                         .ok();
 

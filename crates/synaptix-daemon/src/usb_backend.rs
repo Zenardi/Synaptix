@@ -568,7 +568,11 @@ fn query_charging_status(
 
 /// Attempts to query the Kraken V4 Pro battery via a single trigger+read cycle.
 /// Returns `Some(pct)` on the first successful attempt, `None` if all 3 attempts fail.
-fn try_headset_battery_query(product_id: u16) -> Option<u8> {
+///
+/// `haptic_level` must be the **current** haptic sensitivity setting (0–100).
+/// The battery trigger is a HID SET_REPORT that also sets haptic intensity, so sending
+/// level=0 would reset haptics to OFF. Pass the stored level from `DeviceManager`.
+fn try_headset_battery_query(product_id: u16, haptic_level: u8) -> Option<u8> {
     let (handle, _iface_u8) = open_razer_device(product_id)
         .inspect_err(|e| log::warn!("[HeadsetBatt] open_razer_device failed: {e:?}"))
         .ok()?;
@@ -577,7 +581,7 @@ fn try_headset_battery_query(product_id: u16) -> Option<u8> {
     let read_timeout = std::time::Duration::from_millis(500);
 
     for attempt in 1..=3usize {
-        let trigger = build_haptic_report(0);
+        let trigger = build_haptic_report(haptic_level);
         match handle.write_control(0x21, 0x09, 0x0202, 0x0004, &trigger, ctrl_timeout) {
             Ok(_) => log::info!("[HeadsetBatt] Sent OUTPUT trigger (attempt {attempt})"),
             Err(e) => {
@@ -594,19 +598,25 @@ fn try_headset_battery_query(product_id: u16) -> Option<u8> {
         match handle.read_interrupt(0x84, &mut resp, read_timeout) {
             Ok(_) => {
                 log::info!(
-                    "[HeadsetBatt] Response (attempt {attempt}): {:02x} {:02x} {:02x} …",
-                    resp[0],
-                    resp[1],
-                    resp[2]
+                    "[HeadsetBatt] Response (attempt {attempt}): {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} …",
+                    resp[0], resp[1], resp[2], resp[3], resp[4], resp[5], resp[6], resp[7]
                 );
                 if let Some(pct) = parse_headset_push_packet(&resp) {
                     log::info!("[HeadsetBatt] battery={pct}% (byte[2]=0x{:02x})", resp[2]);
+                    // Haptic-activity feedback: byte[12]=0x01 when the haptic motor is vibrating.
+                    // Confirmed in sidehaptics.pcapng frames 1550/1902/2318.
+                    if resp[12] == 0x01 {
+                        log::info!(
+                            "[HeadsetBatt] HAPTIC ACTIVE — vibration level L=0x{:02x} R=0x{:02x}",
+                            resp[42],
+                            resp[62]
+                        );
+                    }
                     return Some(pct);
                 }
                 log::warn!(
-                    "[HeadsetBatt] Not a battery packet (attempt {attempt}): byte[1]=0x{:02x} byte[2]={}",
-                    resp[1],
-                    resp[2]
+                    "[HeadsetBatt] Not a battery packet (attempt {attempt}): byte[0]=0x{:02x} byte[1]=0x{:02x} byte[2]={}",
+                    resp[0], resp[1], resp[2]
                 );
             }
             Err(e) => {
@@ -624,6 +634,10 @@ fn try_headset_battery_query(product_id: u16) -> Option<u8> {
 
 /// Reads the Kraken V4 Pro headset battery level from the HID interface.
 ///
+/// `haptic_level` is the **current** haptic sensitivity (0–100). The battery
+/// trigger doubles as a haptic SET_REPORT, so we must pass the real level to
+/// avoid resetting haptics to OFF on every poll cycle.
+///
 /// **Protocol (Wireshark-verified, `battery_synapse.pcapng`):**
 /// Battery packets are 64 bytes starting with `02 02 <pct> ...` on ep=0x84 of Interface 4.
 /// `byte[2]` is the direct percentage (0–100, e.g. 0x60 = 96%).
@@ -631,9 +645,9 @@ fn try_headset_battery_query(product_id: u16) -> Option<u8> {
 /// **Trigger mechanism:** The device only pushes battery data in response to a HID SET_REPORT
 /// (OUTPUT) on Interface 4. If all attempts fail (device in "inactive relay mode"), a USB
 /// device reset is issued to force re-enumeration and the query is retried.
-pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
+pub fn poll_headset_battery(product_id: u16, haptic_level: u8) -> Option<u8> {
     // First attempt: normal query.
-    if let Some(pct) = try_headset_battery_query(product_id) {
+    if let Some(pct) = try_headset_battery_query(product_id, haptic_level) {
         return Some(pct);
     }
 
@@ -651,7 +665,7 @@ pub fn poll_headset_battery(product_id: u16) -> Option<u8> {
         } else {
             log::info!("[HeadsetBatt] USB reset OK — waiting for re-enumeration");
             std::thread::sleep(std::time::Duration::from_secs(2));
-            if let Some(pct) = try_headset_battery_query(product_id) {
+            if let Some(pct) = try_headset_battery_query(product_id, haptic_level) {
                 log::info!("[HeadsetBatt] Post-reset query succeeded: {pct}%");
                 return Some(pct);
             }

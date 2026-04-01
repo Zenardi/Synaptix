@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    Arc,
+};
 use synaptix_protocol::{
     registry::{get_device_profile, DeviceCapability},
     BatteryState, DeviceSettings, LightingEffect, RazerDevice, RazerProductId,
@@ -40,6 +44,10 @@ pub struct DeviceManager {
     pub(crate) devices: HashMap<String, RazerDevice>,
     lighting: HashMap<String, LightingEffect>,
     settings: HashMap<String, DeviceSettings>,
+    /// Current haptic level for the Kraken V4 Pro (PID 0x0568).
+    /// Shared with the battery polling loop so the trigger command uses the
+    /// real current level instead of always resetting to 0.
+    pub(crate) kraken_v4_haptic_level: Arc<AtomicU8>,
 }
 
 impl DeviceManager {
@@ -48,6 +56,7 @@ impl DeviceManager {
             devices: HashMap::new(),
             lighting: HashMap::new(),
             settings: crate::config::load_settings(),
+            kraken_v4_haptic_level: Arc::new(AtomicU8::new(crate::config::load_haptic_level())),
         }
     }
 
@@ -411,6 +420,14 @@ impl DeviceManager {
         match result {
             Ok(Ok(())) => {
                 log::info!("[SetHapticIntensity] USB transfer succeeded for {device_id}");
+                // Keep the shared level in sync so the battery polling loop sends
+                // build_haptic_report(clamped) as the trigger instead of level=0.
+                if pid == 0x0568 {
+                    self.kraken_v4_haptic_level
+                        .store(clamped, Ordering::Relaxed);
+                    // Persist level so daemon restarts don't reset haptics to OFF.
+                    crate::config::save_haptic_level(clamped);
+                }
                 true
             }
             Ok(Err(e)) => {

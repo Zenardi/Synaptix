@@ -529,6 +529,10 @@ pub fn parse_headset_push_packet(resp: &[u8; HAPTIC_REPORT_LEN]) -> Option<u8> {
     if resp[0] != HEADSET_HID_REPORT_ID {
         return None;
     }
+    // Wireshark `battery_synapse.pcapng`: all 78+ battery packets have byte[1]=0x02.
+    if resp[1] != 0x02 {
+        return None;
+    }
     let pct = resp[2];
     if pct == 0 || pct > 100 {
         return None;
@@ -554,13 +558,13 @@ pub fn parse_headset_push_packet(resp: &[u8; HAPTIC_REPORT_LEN]) -> Option<u8> {
 /// Bytes 11–13 = 0x00
 /// Byte 14     = 0x02  (field marker)
 /// Byte 15     = 0x00
-/// Byte 16     haptic_b       — secondary intensity (0=off, 81=max observed)
+/// Byte 16     haptic_b       — secondary intensity (0=off, 80–81 active)
 /// Bytes 17–18 = 0x00
 /// Byte 19     = 0x03  (field marker)
 /// Bytes 20–23 = 0x00
 /// Byte 24     = 0x04  (field marker)
 /// Byte 25     = 0x00
-/// Byte 26     = 0x39  (fixed per-session value; Wireshark-verified)
+/// Byte 26     = 0x3a for Off/Low/Med, 0x39 for High (Wireshark-verified)
 /// Bytes 27–28 = 0x00
 /// Byte 29     = 0x05  (field marker)
 /// Bytes 30–33 = 0x00
@@ -568,21 +572,22 @@ pub fn parse_headset_push_packet(resp: &[u8; HAPTIC_REPORT_LEN]) -> Option<u8> {
 /// Bytes 35–38 = 0x00
 /// Byte 39     = 0x07  (field marker)
 /// Byte 40     = 0x09  (fixed)
-/// Byte 41     = 0x20  (fixed; Wireshark-verified)
+/// Byte 41     = 0x1f for Off/Low/Med, 0x20 for High (Wireshark-verified)
 /// Byte 42     counter        — increments by 1 each send (AtomicU8, wraps 255→0)
 /// Byte 43     = 0x01  (fixed)
 /// Byte 44     = 0x08  (fixed)
 /// Bytes 45–63 = 0x00  (padding; NO checksum)
 /// ```
 ///
-/// Level mapping derived from captures (UI values: 0, 33, 66, 100):
+/// Level mapping derived from 3 Wireshark captures (haptics_synapse.pcapng +
+/// sidehaptics.pcapng frames 226 and 574):
 ///
-/// | level | byte[10] | byte[16] |
-/// |-------|----------|----------|
-/// |   0   |    0     |    0     |
-/// |  33   |   26     |   62     |
-/// |  66   |   40     |   68     |
-/// |  100  |   78     |   81     |
+/// | level | byte[10] | byte[16] | byte[26] | byte[41] |
+/// |-------|----------|----------|----------|----------|
+/// |   0   |  0x00    |  0x00    |  0x00    |  0x00    |
+/// |  33   |  0x1a    |  0x50    |  0x3a    |  0x1f    |  ← pcap-verified
+/// |  66   |  0x28    |  0x50    |  0x3a    |  0x1f    |  ← extrapolated
+/// | 100   |  0x4e    |  0x51    |  0x39    |  0x20    |  ← pcap-verified
 pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
     let mut buf = [0u8; HAPTIC_REPORT_LEN];
 
@@ -593,19 +598,23 @@ pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
     buf[7] = 0x17; // cmd_id
 
     // ── Intensity ─────────────────────────────────────────────────────────────
-    // Wireshark-verified lookup table (haptics_synapse.pcapng, packet #329 et al.):
-    //   Off  (0):   haptic_a=0,  haptic_b=0
-    //   Low  (33):  haptic_a=26, haptic_b=62
-    //   Med  (66):  haptic_a=40, haptic_b=68
-    //   High (100): haptic_a=78, haptic_b=81
-    let (haptic_a, haptic_b): (u8, u8) = if level == 0 {
-        (0, 0)
+    // Wireshark-verified lookup table (3 captures: haptics_synapse.pcapng +
+    // sidehaptics.pcapng frames 226 and 574):
+    //
+    //   Level   │ byte[10] haptic_a │ byte[16] haptic_b │ byte[26] │ byte[41]
+    //   ────────┼──────────────────┼──────────────────┼──────────┼─────────
+    //   Off (0) │ 0x00 (  0)       │ 0x00 (  0)       │ 0x00     │ 0x00
+    //   Low(33) │ 0x1a ( 26)       │ 0x50 ( 80) ✓pcap │ 0x3a     │ 0x1f
+    //   Med(66) │ 0x28 ( 40)       │ 0x50 ( 80) extrap │ 0x3a     │ 0x1f
+    //   Hi(100) │ 0x4e ( 78) ✓pcap │ 0x51 ( 81) ✓pcap │ 0x39     │ 0x20
+    let (haptic_a, haptic_b, byte26, byte41): (u8, u8, u8, u8) = if level == 0 {
+        (0x00, 0x00, 0x00, 0x00)
     } else if level <= 33 {
-        (26, 62)
+        (0x1a, 0x50, 0x3a, 0x1f)
     } else if level <= 66 {
-        (40, 68)
+        (0x28, 0x50, 0x3a, 0x1f)
     } else {
-        (78, 81)
+        (0x4e, 0x51, 0x39, 0x20)
     };
 
     buf[8] = 0x09;
@@ -615,12 +624,12 @@ pub fn build_haptic_report(level: u8) -> [u8; HAPTIC_REPORT_LEN] {
     buf[16] = haptic_b;
     buf[19] = 0x03;
     buf[24] = 0x04;
-    buf[26] = 0x39; // Wireshark-verified fixed value (haptics_synapse.pcapng)
+    buf[26] = byte26; // level-dependent: 0x3a for Off/Low/Med, 0x39 for High
     buf[29] = 0x05;
-    buf[34] = 0x06; // ← offset confirmed from pcapng row [32]: 00 00 06 ...
-    buf[39] = 0x07; // ← offset confirmed from pcapng row [32]: ... 00 07 09 20 ...
+    buf[34] = 0x06;
+    buf[39] = 0x07;
     buf[40] = 0x09;
-    buf[41] = 0x20; // ← Wireshark-verified (was 0x09 at wrong position)
+    buf[41] = byte41; // level-dependent: 0x1f for Off/Low/Med, 0x20 for High
     buf[42] = HAPTIC_COUNTER.fetch_add(1, Ordering::Relaxed);
     buf[43] = 0x01;
     buf[44] = 0x08;
@@ -1219,8 +1228,8 @@ mod tests {
         assert_eq!(report[19], 0x03, "field marker byte[19] must be 0x03");
         assert_eq!(report[24], 0x04, "field marker byte[24] must be 0x04");
         assert_eq!(
-            report[26], 0x39,
-            "fixed byte[26] must be 0x39 (Wireshark-verified)"
+            report[26], 0x3a,
+            "byte[26] for Med/Low must be 0x3a (Wireshark sidehaptics.pcapng frame 226)"
         );
         assert_eq!(report[29], 0x05, "field marker byte[29] must be 0x05");
         assert_eq!(report[33], 0x00, "byte[33] must be 0x00 (not a marker)");
@@ -1229,15 +1238,27 @@ mod tests {
         assert_eq!(report[39], 0x07, "field marker byte[39] must be 0x07");
         assert_eq!(report[40], 0x09, "fixed byte[40] must be 0x09");
         assert_eq!(
-            report[41], 0x20,
-            "fixed byte[41] must be 0x20 (Wireshark-verified)"
+            report[41], 0x1f,
+            "byte[41] for Med/Low must be 0x1f (Wireshark sidehaptics.pcapng frame 226)"
         );
         assert_eq!(report[43], 0x01, "fixed byte[43] must be 0x01");
         assert_eq!(report[44], 0x08, "fixed byte[44] must be 0x08");
 
-        // Level 66 (Medium) → Wireshark-verified: haptic_a=40, haptic_b=68
+        // Level 66 (Medium) → haptic_a=40 confirmed; haptic_b=80 extrapolated from Low Wireshark data.
+        // byte[26]=0x3a (same as Low), byte[41]=0x1f (same as Low).
         assert_eq!(report[10], 40, "haptic_a for level=66 (Medium)");
-        assert_eq!(report[16], 68, "haptic_b for level=66 (Medium)");
+        assert_eq!(
+            report[16], 80,
+            "haptic_b for level=66 (Medium) — extrapolated from Low"
+        );
+        assert_eq!(
+            report[26], 0x3a,
+            "byte[26] for Med — Wireshark Low/~Low: 0x3a=58"
+        );
+        assert_eq!(
+            report[41], 0x1f,
+            "byte[41] for Med — Wireshark Low: 0x1f=31"
+        );
 
         // No checksum — trailing bytes must all be zero
         assert_eq!(report[62], 0x00, "no checksum: byte[62] must be 0x00");
@@ -1253,12 +1274,18 @@ mod tests {
         assert_eq!(report[62], 0x00, "no checksum: byte[62] must be 0x00");
     }
 
-    /// Level 33 (Low) — Wireshark-verified values from haptics_synapse.pcapng.
+    /// Level 33 (Low) — Wireshark-verified from sidehaptics.pcapng frame 226.
+    /// byte[10]=0x1a=26, byte[16]=0x50=80, byte[26]=0x3a=58, byte[41]=0x1f=31
     #[test]
     fn test_haptic_report_v4_pro_low_intensity() {
         let report = build_haptic_report(33);
         assert_eq!(report[10], 26, "haptic_a for level=33 (Low)");
-        assert_eq!(report[16], 62, "haptic_b for level=33 (Low)");
+        assert_eq!(
+            report[16], 80,
+            "haptic_b for level=33 (Low) — Wireshark: 0x50=80"
+        );
+        assert_eq!(report[26], 0x3a, "byte[26] for Low — Wireshark: 0x3a=58");
+        assert_eq!(report[41], 0x1f, "byte[41] for Low — Wireshark: 0x1f=31");
     }
 
     /// Level 100 (High) — Wireshark-verified: haptic_a=78, haptic_b=81 (packet #329).
@@ -1300,6 +1327,7 @@ mod tests {
     fn test_parse_headset_hid_packet_full_battery() {
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
         resp[0] = 0x02;
+        resp[1] = 0x02;
         resp[2] = 100;
         assert_eq!(parse_headset_push_packet(&resp), Some(100));
     }
@@ -1309,6 +1337,7 @@ mod tests {
     fn test_parse_headset_hid_packet_one_percent() {
         let mut resp = [0u8; HAPTIC_REPORT_LEN];
         resp[0] = 0x02;
+        resp[1] = 0x02;
         resp[2] = 1;
         assert_eq!(parse_headset_push_packet(&resp), Some(1));
     }
@@ -1374,6 +1403,38 @@ mod tests {
             parse_headset_push_packet(&resp),
             None,
             "all-zero packet must be rejected"
+        );
+    }
+
+    /// byte[1] != 0x02 must return None.
+    ///
+    /// Wireshark `battery_synapse.pcapng`: all 78+ battery packets have byte[1]=0x02.
+    /// Any packet with a different byte[1] is NOT a battery status packet.
+    #[test]
+    fn test_parse_headset_push_packet_validates_byte1() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02; // correct report ID
+        resp[1] = 0x99; // wrong byte[1] — not a battery packet
+        resp[2] = 50; // would be valid 50% if byte[1] were correct
+        assert_eq!(
+            parse_headset_push_packet(&resp),
+            None,
+            "byte[1] != 0x02 must be rejected — not a battery packet"
+        );
+    }
+
+    /// byte[1] = 0x02 (Wireshark-verified constant) must still pass when
+    /// combined with a valid battery percentage.
+    #[test]
+    fn test_parse_headset_push_packet_accepts_correct_byte1() {
+        let mut resp = [0u8; HAPTIC_REPORT_LEN];
+        resp[0] = 0x02;
+        resp[1] = 0x02; // Wireshark-verified constant
+        resp[2] = 75;
+        assert_eq!(
+            parse_headset_push_packet(&resp),
+            Some(75),
+            "valid packet with byte[1]=0x02 must return Some(75)"
         );
     }
 
